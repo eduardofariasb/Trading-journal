@@ -583,7 +583,7 @@ const CardTitle = ({ title, subtitle, icon: Icon }) => {
   const renderIcon = () => {
     if (!Icon) return null;
     if (React.isValidElement(Icon)) return Icon;
-    if (typeof Icon === 'function' || typeof Icon === 'object') {
+    if (typeof Icon === 'function' || (typeof Icon === 'object' && Icon !== null)) {
       const IconComp = Icon;
       return <IconComp className="w-4 h-4 text-gray-400" />;
     }
@@ -688,7 +688,7 @@ const PropFirmTracker = ({ activeAccount, accountMeta, onEditAccount, netPnl }) 
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-base font-bold text-slate-900">
-                {isAll ? "Meta de Fondeo (Vista Consolidada)" : `Cuenta: ${activeAccount}`}
+                {isAll ? "Meta de Fondeo (Vista Consolidada)" : `Cuenta: ${String(activeAccount)}`}
               </h2>
               <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${
                 isFunded 
@@ -699,9 +699,9 @@ const PropFirmTracker = ({ activeAccount, accountMeta, onEditAccount, netPnl }) 
               </span>
             </div>
             <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-2">
-              <span>Compra: <strong>{meta.purchaseDate || 'Sin asignar'}</strong></span>
+              <span>Compra: <strong>{String(meta?.purchaseDate || 'Sin asignar')}</strong></span>
               <span>•</span>
-              <span>Vencimiento / Renovación: <strong>{meta.expirationDate || 'Sin asignar'}</strong></span>
+              <span>Vencimiento / Renovación: <strong>{String(meta?.expirationDate || 'Sin asignar')}</strong></span>
             </p>
           </div>
         </div>
@@ -1650,17 +1650,27 @@ const App = () => {
         day: (i + 1).toString(),
         date: dStr,
         pnl: dData.pnl,
-        cumulative: cumulative,
+        cumulative,
         trades: dData.trades,
-        winRate: calcWinRate
+        winRate: calcWinRate,
+        avgWin: dData.avgWin,
+        avgLoss: dData.avgLoss
       };
     });
-  }, [filteredTrades, realTrades.length]);
+  }, [filteredTrades, realTrades]);
 
-  const formatMonthStr = (yyyy_mm) => {
-    const [y, m] = yyy_mm.split('-');
-    const date = new Date(parseInt(y), parseInt(m) - 1, 1);
-    return date.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }).replace(/^\w/, c => c.toUpperCase());
+  const formatMonthStr = (dateStr) => {
+    if (!dateStr || typeof dateStr !== 'string' || !dateStr.includes('-')) {
+      return String(dateStr || '');
+    }
+    const parts = dateStr.split('-');
+    if (parts.length < 2) return String(dateStr);
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    if (isNaN(y) || isNaN(m)) return String(dateStr);
+    const date = new Date(y, m - 1, 1);
+    const monthName = date.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
+    return monthName.charAt(0).toUpperCase() + monthName.slice(1);
   };
 
   const activeAccountKey = selectedAccount === 'all' ? 'Cuenta Principal' : selectedAccount;
@@ -1722,7 +1732,7 @@ const App = () => {
                     onChange={(e) => setDateFilter(e.target.value)}
                   >
                     <option value="all">Histórico Completo</option>
-                    {availableMonths.map(m => (
+                    {availableMonths.map((m) => (
                       <option key={m} value={m}>{formatMonthStr(m)}</option>
                     ))}
                   </select>
