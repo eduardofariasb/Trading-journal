@@ -9,7 +9,7 @@ import {
   CalendarDays, Upload, X, Image as ImageIcon, Loader2, CheckCircle2,
   ChevronLeft, ChevronRight, Calendar, Settings, Trash2, KeyRound, Database,
   Wallet, DollarSign, Award, CalendarClock, Edit3, ShieldCheck, Sparkles,
-  BarChart2
+  BarChart2, ClipboardPaste, Copy, FileText
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
@@ -60,9 +60,81 @@ const radarData = [
   { subject: 'Paciencia', score: 78, fullMark: 100 },
 ];
 
+const GEMINI_COPY_PROMPT = `Actúa como extractor de métricas de trading. Extrae de esta captura los datos y responde ÚNICAMENTE con este formato JSON:
+{
+  "date": "YYYY-MM-DD",
+  "netPnl": 0.00,
+  "totalTrades": 0,
+  "winRate": 0,
+  "avgWin": 0.00,
+  "avgLoss": 0.00
+}`;
+
+const parsePastedTradingData = (text) => {
+  if (!text || typeof text !== 'string') return null;
+
+  // 1. Intentar extraer objeto JSON directamente o dentro de bloques ```json ... ```
+  try {
+    const jsonMatch = text.match(/\{[\s\S]*?\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (parsed && typeof parsed === 'object') {
+        const todayStr = new Date().toISOString().split('T')[0];
+        return {
+          date: parsed.date || todayStr,
+          netPnl: Number(parsed.netPnl ?? parsed.pnl ?? parsed.net_pnl ?? 0),
+          totalTrades: parseInt(parsed.totalTrades ?? parsed.trades ?? parsed.total_trades ?? 0, 10),
+          winRate: Number(parsed.winRate ?? parsed.win_rate ?? parsed.winrate ?? 0),
+          avgWin: Number(parsed.avgWin ?? parsed.avg_win ?? 0),
+          avgLoss: Number(parsed.avgLoss ?? parsed.avg_loss ?? 0)
+        };
+      }
+    }
+  } catch {
+    // Si falla el parseo estricto de JSON, continúa con análisis de texto por expresiones regulares
+  }
+
+  // 2. Extractor de respaldo para texto plano copiado
+  const extractNum = (regex) => {
+    const m = text.match(regex);
+    if (!m) return null;
+    const clean = m[1].replace(/\$/g, '').replace(/,/g, '').trim();
+    const val = parseFloat(clean);
+    return isNaN(val) ? null : val;
+  };
+
+  const todayStr = new Date().toISOString().split('T')[0];
+  const dateMatch = text.match(/(\d{4}-\d{2}-\d{2})/) || text.match(/(\d{2}\/\d{2}\/\d{4})/);
+  let extractedDate = todayStr;
+  if (dateMatch) {
+    if (dateMatch[1].includes('/')) {
+      const [d, m, y] = dateMatch[1].split('/');
+      extractedDate = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+    } else {
+      extractedDate = dateMatch[1];
+    }
+  }
+
+  const netPnl = extractNum(/(?:net\s*pnl|pnl\s*neto|resultado|profit|net\s*profit|ganancia\s*neta)[\s:=]+([+-]?\$?[\d,.-]+)/i) ?? 0;
+  const totalTrades = Math.round(extractNum(/(?:total\s*trades|trades|operaciones|total\s*operaciones)[\s:=]+(\d+)/i) ?? 0);
+  const winRate = extractNum(/(?:win\s*rate|tasa\s*de\s*acierto|winning\s*%|efectividad)[\s:=]+([\d,.-]+)/i) ?? 0;
+  const avgWin = extractNum(/(?:avg\s*win|ganancia\s*promedio|average\s*win)[\s:=]+([+-]?\$?[\d,.-]+)/i) ?? 0;
+  const avgLoss = extractNum(/(?:avg\s*loss|p[eé]rdida\s*promedio|average\s*loss)[\s:=]+([+-]?\$?[\d,.-]+)/i) ?? 0;
+
+  return {
+    date: extractedDate,
+    netPnl,
+    totalTrades,
+    winRate,
+    avgWin,
+    avgLoss
+  };
+};
+
 const analyzeScreenshot = async (base64Data, customApiKey = "") => {
   const apiKey = customApiKey || (typeof window !== 'undefined' ? window.localStorage?.getItem('gemini_api_key') : "") || "";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-pro:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  
   const payload = {
     contents: [{
       role: "user",
@@ -94,25 +166,440 @@ const analyzeScreenshot = async (base64Data, customApiKey = "") => {
   return JSON.parse(data.candidates[0].content.parts[0].text);
 };
 
+const UploadModal = ({ isOpen, onClose, onSave, userId, existingAccounts = [] }) => {
+  const [activeTab, setActiveTab] = useState('paste'); // 'paste' | 'upload'
+  const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [formData, setFormData] = useState(null);
+  const [pastedText, setPastedText] = useState('');
+  const [promptCopied, setPromptCopied] = useState(false);
+  const [accountName, setAccountName] = useState('Cuenta Principal');
+  const [customAccountInput, setCustomAccountInput] = useState('');
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setError(null);
+    }
+  }, [isOpen]);
+
+  if (!isOpen) return null;
+
+  const handleFileSelect = (e) => {
+    const selected = e.target.files[0];
+    if (selected) {
+      setFile(selected);
+      setFormData(null);
+      setError(null);
+      const reader = new FileReader();
+      reader.onloadend = () => setPreview(reader.result);
+      reader.readAsDataURL(selected);
+    }
+  };
+
+  const handleAnalyze = async () => {
+    if (!preview) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await analyzeScreenshot(preview);
+      setFormData(data);
+    } catch (err) {
+      console.error(err);
+      setError("Fallo al analizar la imagen por API. Te recomendamos usar la pestaña 'Pegar Datos' para procesar gratis y sin límites en Gemini Web.");
+    }
+    setLoading(false);
+  };
+
+  const handleProcessPastedText = (textToProcess) => {
+    const text = textToProcess || pastedText;
+    if (!text || !text.trim()) {
+      setError("El texto a procesar está vacío. Pega la respuesta de Gemini primero.");
+      return;
+    }
+    setError(null);
+    const parsed = parsePastedTradingData(text);
+    if (parsed) {
+      setFormData(parsed);
+    } else {
+      setError("No se pudieron interpretar los datos. Puedes usar la opción de llenado manual abajo.");
+    }
+  };
+
+  const handleReadClipboard = async () => {
+    try {
+      if (!navigator.clipboard?.readText) {
+        setError("Tu navegador no permite leer el portapapeles directamente. Pega el texto manualmente en el recuadro.");
+        return;
+      }
+      const text = await navigator.clipboard.readText();
+      if (!text || !text.trim()) {
+        setError("El portapapeles está vacío. Copia el resultado de Gemini antes de presionar este botón.");
+        return;
+      }
+      setPastedText(text);
+      handleProcessPastedText(text);
+    } catch {
+      setError("Permiso del portapapeles denegado. Pega el texto con Ctrl + V en el recuadro.");
+    }
+  };
+
+  const handleStartBlank = () => {
+    const todayStr = new Date().toISOString().split('T')[0];
+    setFormData({
+      date: todayStr,
+      netPnl: 0,
+      totalTrades: 1,
+      winRate: 100,
+      avgWin: 0,
+      avgLoss: 0
+    });
+    setError(null);
+  };
+
+  const handleCopyPrompt = async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(GEMINI_COPY_PROMPT);
+      }
+      setPromptCopied(true);
+      setTimeout(() => setPromptCopied(false), 2500);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleSave = async () => {
+    if (!formData || !userId) return;
+    const finalAccount = accountName === 'NEW' ? (customAccountInput.trim() || 'Cuenta Principal') : accountName;
+    try {
+      setLoading(true);
+      const collectionRef = collection(db, 'artifacts', appId, 'users', userId, 'trading_days');
+      await addDoc(collectionRef, {
+        ...formData,
+        account: finalAccount,
+        createdAt: new Date().toISOString()
+      });
+      setFormData(null);
+      setPastedText('');
+      setPreview(null);
+      onSave();
+    } catch(err) {
+      console.error("Save error:", err);
+      setError("No se pudo guardar en la base de datos.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[92vh]">
+        
+        {/* Modal Header */}
+        <div className="p-4 border-b flex justify-between items-center bg-slate-50">
+          <div className="flex items-center gap-2">
+            <div className="p-1.5 bg-emerald-100 text-emerald-700 rounded-lg">
+              <ClipboardPaste className="w-4 h-4" />
+            </div>
+            <h2 className="font-bold text-slate-800 text-sm">
+              Registrar Sesión de Trading
+            </h2>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Tab Selector if no form is currently loaded */}
+        {!formData && (
+          <div className="flex border-b bg-slate-100/70 p-1 text-xs font-semibold">
+            <button
+              onClick={() => { setActiveTab('paste'); setError(null); }}
+              className={`flex-1 py-2 rounded-lg flex items-center justify-center gap-1.5 transition-all ${
+                activeTab === 'paste' 
+                  ? 'bg-white text-slate-900 shadow-2xs font-bold' 
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <ClipboardPaste className="w-3.5 h-3.5 text-blue-600" />
+              Pegar Datos de Gemini (Recomendado)
+            </button>
+            <button
+              onClick={() => { setActiveTab('upload'); setError(null); }}
+              className={`flex-1 py-2 rounded-lg flex items-center justify-center gap-1.5 transition-all ${
+                activeTab === 'upload' 
+                  ? 'bg-white text-slate-900 shadow-2xs font-bold' 
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <ImageIcon className="w-3.5 h-3.5 text-emerald-600" />
+              Subir Imagen (Vía API)
+            </button>
+          </div>
+        )}
+        
+        <div className="p-6 overflow-y-auto flex-1">
+          {error && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-100 rounded-lg text-xs text-red-600">
+              {error}
+            </div>
+          )}
+
+          {/* TAB 1: PASTE / MANUAL MODE */}
+          {!formData && activeTab === 'paste' && (
+            <div className="space-y-4">
+              <div className="p-3.5 bg-blue-50/60 border border-blue-100 rounded-xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-blue-900 flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-blue-600" /> ¿Cómo funciona este método?
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleCopyPrompt}
+                    className="flex items-center gap-1 text-[11px] px-2.5 py-1 bg-white border border-blue-200 text-blue-700 rounded-md font-semibold hover:bg-blue-50 shadow-2xs transition-colors"
+                  >
+                    <Copy className="w-3 h-3" />
+                    {promptCopied ? "¡Prompt Copiado!" : "Copiar Prompt para Gemini"}
+                  </button>
+                </div>
+                <p className="text-[11px] text-blue-800 leading-relaxed">
+                  1. Abre <strong>Gemini Web</strong> (gemini.google.com), sube tu captura y pégale el prompt copiado.<br/>
+                  2. Copia la respuesta generada por Gemini.<br/>
+                  3. Presiona el botón verde abajo para autocompletar tu formulario al instante.
+                </p>
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleReadClipboard}
+                  className="flex-1 py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs shadow-xs transition-all flex items-center justify-center gap-2"
+                >
+                  <ClipboardPaste className="w-4 h-4" />
+                  Pegar del Portapapeles y Autocompletar
+                </button>
+              </div>
+
+              <div className="relative">
+                <label className="text-[11px] font-semibold text-slate-600 block mb-1">
+                  O pega manualmente el texto/JSON aquí:
+                </label>
+                <textarea
+                  rows={4}
+                  value={pastedText}
+                  onChange={(e) => setPastedText(e.target.value)}
+                  placeholder={`Pega aquí el resultado de Gemini...\nEjemplo:\n{\n  "date": "2026-09-14",\n  "netPnl": 350,\n  "totalTrades": 4,\n  "winRate": 75\n}`}
+                  className="w-full p-3 border border-slate-200 rounded-xl text-xs font-mono focus:ring-2 focus:ring-blue-500 outline-none resize-none bg-slate-50/50"
+                />
+                {pastedText.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => handleProcessPastedText()}
+                    className="mt-2 w-full py-2 bg-slate-800 hover:bg-slate-900 text-white font-semibold rounded-lg text-xs transition-colors"
+                  >
+                    Interpretar y Llenar Formulario
+                  </button>
+                )}
+              </div>
+
+              <div className="pt-2 border-t border-slate-100 text-center">
+                <button
+                  type="button"
+                  onClick={handleStartBlank}
+                  className="text-xs text-slate-500 hover:text-slate-800 font-semibold underline underline-offset-2 flex items-center justify-center gap-1 mx-auto"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  Prefiero escribir los números manualmente en blanco
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 2: IMAGE UPLOAD MODE (DIRECT API) */}
+          {!formData && activeTab === 'upload' && (
+            <div className="space-y-4">
+              {!preview ? (
+                <div className="border-2 border-dashed border-gray-200 rounded-xl p-8 flex flex-col items-center justify-center text-center hover:bg-gray-50 transition-colors relative">
+                  <input type="file" accept="image/*" onChange={handleFileSelect} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                  <ImageIcon className="w-10 h-10 text-gray-300 mb-3" />
+                  <p className="text-sm font-medium text-gray-700">Haz clic o arrastra tu captura aquí</p>
+                  <p className="text-xs text-gray-400 mt-1">Soporta PNG, JPG</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="relative rounded-lg overflow-hidden border">
+                    <img src={preview} alt="Preview" className="w-full h-auto object-contain max-h-48" />
+                    <button onClick={() => {setPreview(null); setFormData(null);}} className="absolute top-2 right-2 bg-slate-900/60 p-1.5 rounded-full text-white hover:bg-slate-900/80">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {!loading && (
+                    <button onClick={handleAnalyze} className="w-full py-3 bg-emerald-500 text-white rounded-lg font-medium hover:bg-emerald-600 flex items-center justify-center gap-2">
+                      <span>Analizar con Inteligencia Artificial</span>
+                    </button>
+                  )}
+
+                  {loading && (
+                    <div className="flex flex-col items-center justify-center py-6 text-emerald-600">
+                      <Loader2 className="w-8 h-8 animate-spin mb-2" />
+                      <p className="text-sm font-medium">Procesando imagen con Gemini...</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ACTIVE FORM: REVIEW & ASSIGN ACCOUNT */}
+          {formData && (
+            <div className="bg-emerald-50/30 border border-emerald-100 rounded-xl p-4 space-y-3">
+              <div className="flex justify-between items-center">
+                <h4 className="text-xs font-bold text-emerald-800 uppercase tracking-wide flex items-center gap-1">
+                  <CheckCircle2 className="w-4 h-4" /> Revisa y asigna cuenta
+                </h4>
+                <button
+                  type="button"
+                  onClick={() => { setFormData(null); setError(null); }}
+                  className="text-[11px] text-slate-400 hover:text-slate-700 underline"
+                >
+                  Volver a pegar / cambiar
+                </button>
+              </div>
+              
+              <div className="bg-white p-3 rounded-lg border border-gray-200">
+                <label className="text-xs font-semibold text-gray-700 flex items-center gap-1.5 mb-1.5">
+                  <Wallet className="w-3.5 h-3.5 text-blue-500" /> Cuenta de Trading
+                </label>
+                <select
+                  value={accountName}
+                  onChange={(e) => setAccountName(e.target.value)}
+                  className="w-full p-2 border border-gray-200 rounded-md text-xs font-medium focus:ring-2 focus:ring-emerald-500 outline-none"
+                >
+                  <option value="Cuenta Principal">Cuenta Principal</option>
+                  {existingAccounts.filter(a => a !== 'Cuenta Principal').map(acc => (
+                    <option key={acc} value={acc}>{acc}</option>
+                  ))}
+                  <option value="NEW">+ Agregar nueva cuenta...</option>
+                </select>
+
+                {accountName === 'NEW' && (
+                  <input
+                    type="text"
+                    placeholder="Ej. Apex 50k #1, Topstep 100k, Personal..."
+                    value={customAccountInput}
+                    onChange={(e) => setCustomAccountInput(e.target.value)}
+                    className="mt-2 w-full p-2 border border-blue-200 rounded-md text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                    autoFocus
+                  />
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div className="flex flex-col">
+                  <span className="text-gray-600 text-xs mb-1 font-medium">Fecha</span>
+                  <input 
+                    type="date" 
+                    className="p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white" 
+                    value={formData.date || ''} 
+                    onChange={e => setFormData({...formData, date: e.target.value})} 
+                  />
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-gray-600 text-xs mb-1 font-medium">Net P&L ($)</span>
+                  <input 
+                    type="number" step="0.01" 
+                    className={`p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white font-semibold ${formData.netPnl >= 0 ? 'text-emerald-600' : 'text-red-500'}`} 
+                    value={formData.netPnl || 0} 
+                    onChange={e => setFormData({...formData, netPnl: parseFloat(e.target.value) || 0})} 
+                  />
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-gray-600 text-xs mb-1 font-medium">Total Trades</span>
+                  <input 
+                    type="number" 
+                    className="p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white" 
+                    value={formData.totalTrades || 0} 
+                    onChange={e => setFormData({...formData, totalTrades: parseInt(e.target.value) || 0})} 
+                  />
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-gray-600 text-xs mb-1 font-medium">Win Rate (%)</span>
+                  <input 
+                    type="number" step="0.1" 
+                    className="p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white" 
+                    value={formData.winRate || 0} 
+                    onChange={e => setFormData({...formData, winRate: parseFloat(e.target.value) || 0})} 
+                  />
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-gray-600 text-xs mb-1 font-medium">Avg Win ($)</span>
+                  <input 
+                    type="number" step="0.01" 
+                    className="p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white text-emerald-600" 
+                    value={formData.avgWin || 0} 
+                    onChange={e => setFormData({...formData, avgWin: parseFloat(e.target.value) || 0})} 
+                  />
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-gray-600 text-xs mb-1 font-medium">Avg Loss ($)</span>
+                  <input 
+                    type="number" step="0.01" 
+                    className="p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white text-red-500" 
+                    value={formData.avgLoss || 0} 
+                    onChange={e => setFormData({...formData, avgLoss: parseFloat(e.target.value) || 0})} 
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+        
+        {formData && (
+          <div className="p-4 border-t bg-gray-50 flex justify-end gap-2">
+            <button onClick={() => {setPreview(null); setFormData(null);}} className="px-4 py-2 text-gray-500 hover:text-gray-700 text-sm font-medium transition-colors">
+              Cancelar
+            </button>
+            <button onClick={handleSave} disabled={loading} className="px-5 py-2 bg-slate-800 text-white rounded-lg text-sm font-medium hover:bg-slate-900 transition-colors disabled:opacity-50 flex items-center gap-2">
+              {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+              Guardar en el Journal
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const Card = ({ children, className = "" }) => (
   <div className={`bg-white rounded-xl shadow-sm border border-gray-100 p-5 ${className}`}>
     {children}
   </div>
 );
 
-const CardTitle = ({ title, subtitle, icon: Icon }) => (
-  <div className="flex items-center justify-between mb-3">
-    <div>
-      <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">{title}</h3>
-      {subtitle && <p className="text-xs text-gray-400 mt-0.5">{subtitle}</p>}
+const CardTitle = ({ title, subtitle, icon: Icon }) => {
+  const renderIcon = () => {
+    if (!Icon) return null;
+    if (React.isValidElement(Icon)) return Icon;
+    if (typeof Icon === 'function' || typeof Icon === 'object') {
+      const IconComp = Icon;
+      return <IconComp className="w-4 h-4 text-gray-400" />;
+    }
+    return null;
+  };
+
+  return (
+    <div className="flex items-center justify-between mb-3">
+      <div>
+        <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">{title}</h3>
+        {subtitle && <p className="text-xs text-gray-400 mt-0.5">{subtitle}</p>}
+      </div>
+      {renderIcon()}
     </div>
-    {Icon && typeof Icon === 'function' ? (
-      <Icon className="w-4 h-4 text-gray-400" />
-    ) : React.isValidElement(Icon) ? (
-      Icon
-    ) : null}
-  </div>
-);
+  );
+};
 
 const SemiCircleGauge = ({ value, max, label, prefix = "", suffix = "", color = themeColors.emerald }) => {
   const percentage = Math.min((value / max) * 100, 100);
@@ -135,11 +622,12 @@ const SemiCircleGauge = ({ value, max, label, prefix = "", suffix = "", color = 
 };
 
 const getRemainingTradingDays = (targetDateStr) => {
-  if (!targetDateStr) return 0;
+  if (!targetDateStr || typeof targetDateStr !== 'string') return 0;
+  const parts = targetDateStr.split('-').map(Number);
+  if (parts.length < 3 || isNaN(parts[0])) return 0;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const [y, m, d] = targetDateStr.split('-').map(Number);
-  const targetDate = new Date(y, m - 1, d);
+  const targetDate = new Date(parts[0], parts[1] - 1, parts[2]);
   targetDate.setHours(0, 0, 0, 0);
 
   if (targetDate < today) return 0;
@@ -157,11 +645,12 @@ const getRemainingTradingDays = (targetDateStr) => {
 };
 
 const getCalendarDaysLeft = (targetDateStr) => {
-  if (!targetDateStr) return 0;
+  if (!targetDateStr || typeof targetDateStr !== 'string') return 0;
+  const parts = targetDateStr.split('-').map(Number);
+  if (parts.length < 3 || isNaN(parts[0])) return 0;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const [y, m, d] = targetDateStr.split('-').map(Number);
-  const targetDate = new Date(y, m - 1, d);
+  const targetDate = new Date(parts[0], parts[1] - 1, parts[2]);
   targetDate.setHours(0, 0, 0, 0);
 
   const diffTime = targetDate - today;
@@ -532,226 +1021,6 @@ const SettingsModal = ({ isOpen, onClose }) => {
             Guardar Cambios
           </button>
         </div>
-      </div>
-    </div>
-  );
-};
-
-const UploadModal = ({ isOpen, onClose, onSave, userId, existingAccounts = [] }) => {
-  const [file, setFile] = useState(null);
-  const [preview, setPreview] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [formData, setFormData] = useState(null);
-  const [accountName, setAccountName] = useState('Cuenta Principal');
-  const [customAccountInput, setCustomAccountInput] = useState('');
-  const [error, setError] = useState(null);
-
-  if (!isOpen) return null;
-
-  const handleFileSelect = (e) => {
-    const selected = e.target.files[0];
-    if (selected) {
-      setFile(selected);
-      setFormData(null);
-      setError(null);
-      const reader = new FileReader();
-      reader.onloadend = () => setPreview(reader.result);
-      reader.readAsDataURL(selected);
-    }
-  };
-
-  const handleAnalyze = async () => {
-    if (!preview) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await analyzeScreenshot(preview);
-      setFormData(data);
-    } catch (err) {
-      console.error(err);
-      setError("Fallo al analizar la imagen. Intenta con una captura más clara o revisa tu clave de Gemini.");
-    }
-    setLoading(false);
-  };
-
-  const handleSave = async () => {
-    if (!formData || !userId) return;
-    const finalAccount = accountName === 'NEW' ? (customAccountInput.trim() || 'Cuenta Principal') : accountName;
-    try {
-      setLoading(true);
-      const collectionRef = collection(db, 'artifacts', appId, 'users', userId, 'trading_days');
-      await addDoc(collectionRef, {
-        ...formData,
-        account: finalAccount,
-        createdAt: new Date().toISOString()
-      });
-      onSave();
-    } catch(err) {
-      console.error("Save error:", err);
-      setError("No se pudo guardar en la base de datos.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
-        <div className="p-4 border-b flex justify-between items-center bg-gray-50">
-          <h2 className="font-semibold text-gray-700 flex items-center gap-2">
-            <Upload className="w-5 h-5 text-emerald-500" />
-            Subir Captura Diaria
-          </h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-        
-        <div className="p-6 overflow-y-auto flex-1">
-          {!preview ? (
-            <div className="border-2 border-dashed border-gray-200 rounded-xl p-8 flex flex-col items-center justify-center text-center hover:bg-gray-50 transition-colors relative">
-              <input type="file" accept="image/*" onChange={handleFileSelect} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
-              <ImageIcon className="w-10 h-10 text-gray-300 mb-3" />
-              <p className="text-sm font-medium text-gray-700">Haz clic o arrastra tu captura aquí</p>
-              <p className="text-xs text-gray-400 mt-1">Soporta PNG, JPG</p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <div className="relative rounded-lg overflow-hidden border">
-                <img src={preview} alt="Preview" className="w-full h-auto object-contain max-h-48" />
-                <button onClick={() => {setPreview(null); setFormData(null);}} className="absolute top-2 right-2 bg-slate-900/60 p-1.5 rounded-full text-white hover:bg-slate-900/80">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              {!formData && !loading && (
-                <button onClick={handleAnalyze} className="w-full py-3 bg-emerald-500 text-white rounded-lg font-medium hover:bg-emerald-600 flex items-center justify-center gap-2">
-                  <span>Analizar con Inteligencia Artificial</span>
-                </button>
-              )}
-
-              {loading && (
-                <div className="flex flex-col items-center justify-center py-6 text-emerald-600">
-                  <Loader2 className="w-8 h-8 animate-spin mb-2" />
-                  <p className="text-sm font-medium">Procesando imagen con Gemini...</p>
-                </div>
-              )}
-
-              {error && (
-                <div className="p-3 bg-red-50 border border-red-100 rounded-lg text-sm text-red-600 text-center">
-                  {error}
-                </div>
-              )}
-
-              {formData && (
-                <div className="bg-emerald-50/30 border border-emerald-100 rounded-xl p-4 space-y-3">
-                  <div className="flex justify-between items-center">
-                    <h4 className="text-xs font-bold text-emerald-800 uppercase tracking-wide flex items-center gap-1">
-                      <CheckCircle2 className="w-4 h-4" /> Revisa y asigna cuenta
-                    </h4>
-                  </div>
-                  
-                  <div className="bg-white p-3 rounded-lg border border-gray-200">
-                    <label className="text-xs font-semibold text-gray-700 flex items-center gap-1.5 mb-1.5">
-                      <Wallet className="w-3.5 h-3.5 text-blue-500" /> Cuenta de Trading
-                    </label>
-                    <select
-                      value={accountName}
-                      onChange={(e) => setAccountName(e.target.value)}
-                      className="w-full p-2 border border-gray-200 rounded-md text-xs font-medium focus:ring-2 focus:ring-emerald-500 outline-none"
-                    >
-                      <option value="Cuenta Principal">Cuenta Principal</option>
-                      {existingAccounts.filter(a => a !== 'Cuenta Principal').map(acc => (
-                        <option key={acc} value={acc}>{acc}</option>
-                      ))}
-                      <option value="NEW">+ Agregar nueva cuenta...</option>
-                    </select>
-
-                    {accountName === 'NEW' && (
-                      <input
-                        type="text"
-                        placeholder="Ej. Apex 50k #1, Topstep 100k, Personal..."
-                        value={customAccountInput}
-                        onChange={(e) => setCustomAccountInput(e.target.value)}
-                        className="mt-2 w-full p-2 border border-blue-200 rounded-md text-xs focus:ring-2 focus:ring-blue-500 outline-none"
-                        autoFocus
-                      />
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3 text-sm">
-                    <div className="flex flex-col">
-                      <span className="text-gray-600 text-xs mb-1 font-medium">Fecha</span>
-                      <input 
-                        type="date" 
-                        className="p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white" 
-                        value={formData.date || ''} 
-                        onChange={e => setFormData({...formData, date: e.target.value})} 
-                      />
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-gray-600 text-xs mb-1 font-medium">Net P&L ($)</span>
-                      <input 
-                        type="number" step="0.01" 
-                        className={`p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white font-semibold ${formData.netPnl >= 0 ? 'text-emerald-600' : 'text-red-500'}`} 
-                        value={formData.netPnl || 0} 
-                        onChange={e => setFormData({...formData, netPnl: parseFloat(e.target.value) || 0})} 
-                      />
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-gray-600 text-xs mb-1 font-medium">Total Trades</span>
-                      <input 
-                        type="number" 
-                        className="p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white" 
-                        value={formData.totalTrades || 0} 
-                        onChange={e => setFormData({...formData, totalTrades: parseInt(e.target.value) || 0})} 
-                      />
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-gray-600 text-xs mb-1 font-medium">Win Rate (%)</span>
-                      <input 
-                        type="number" step="0.1" 
-                        className="p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white" 
-                        value={formData.winRate || 0} 
-                        onChange={e => setFormData({...formData, winRate: parseFloat(e.target.value) || 0})} 
-                      />
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-gray-600 text-xs mb-1 font-medium">Avg Win ($)</span>
-                      <input 
-                        type="number" step="0.01" 
-                        className="p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white text-emerald-600" 
-                        value={formData.avgWin || 0} 
-                        onChange={e => setFormData({...formData, avgWin: parseFloat(e.target.value) || 0})} 
-                      />
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-gray-600 text-xs mb-1 font-medium">Avg Loss ($)</span>
-                      <input 
-                        type="number" step="0.01" 
-                        className="p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white text-red-500" 
-                        value={formData.avgLoss || 0} 
-                        onChange={e => setFormData({...formData, avgLoss: parseFloat(e.target.value) || 0})} 
-                      />
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-        
-        {formData && (
-          <div className="p-4 border-t bg-gray-50 flex justify-end gap-2">
-            <button onClick={() => {setPreview(null); setFormData(null);}} className="px-4 py-2 text-gray-500 hover:text-gray-700 text-sm font-medium transition-colors">
-              Cancelar
-            </button>
-            <button onClick={handleSave} disabled={loading} className="px-5 py-2 bg-slate-800 text-white rounded-lg text-sm font-medium hover:bg-slate-900 transition-colors disabled:opacity-50 flex items-center gap-2">
-              {loading && <Loader2 className="w-4 h-4 animate-spin" />}
-              Guardar en el Journal
-            </button>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -1472,7 +1741,7 @@ const App = () => {
                 onClick={() => setIsModalOpen(true)}
                 className="px-4 py-2.5 bg-emerald-500 text-white rounded-lg text-sm font-medium hover:bg-emerald-600 shadow-sm transition-colors flex items-center gap-2"
               >
-                <Upload className="w-4 h-4" /> Subir Captura
+                <ClipboardPaste className="w-4 h-4" /> Registrar Trades
               </button>
             </div>
           </header>
