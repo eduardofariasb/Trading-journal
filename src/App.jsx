@@ -1,15 +1,15 @@
-import React, { useMemo, useState, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { 
   LineChart, Line, BarChart, Bar, AreaChart, Area, RadarChart, PolarGrid, 
   PolarAngleAxis, PolarRadiusAxis, Radar, ScatterChart, Scatter, XAxis, YAxis, 
-  CartesianGrid, Tooltip, ResponsiveContainer, Cell, ZAxis
+  CartesianGrid, Tooltip, ResponsiveContainer, Cell
 } from 'recharts';
 import { 
-  ArrowUpRight, ArrowDownRight, Activity, Target, TrendingUp, 
-  Clock, CalendarDays, Upload, X, Image as ImageIcon, Loader2, CheckCircle2,
+  ArrowUpRight, Activity, Target, TrendingUp, 
+  CalendarDays, Upload, X, Image as ImageIcon, Loader2, CheckCircle2,
   ChevronLeft, ChevronRight, Calendar, Settings, Trash2, KeyRound, Database,
-  Wallet, DollarSign, Layers, Award, Timer, CalendarClock, Edit3, ShieldCheck,
-  CheckSquare, AlertCircle, Sparkles
+  Wallet, DollarSign, Award, CalendarClock, Edit3, ShieldCheck, Sparkles,
+  BarChart2
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
@@ -32,7 +32,10 @@ const activeFirebaseConfig = storedCustomConfig ? JSON.parse(storedCustomConfig)
 const app = initializeApp(activeFirebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'trading-journal-prod';
+
+// Sanitize appId so slashes from file paths (__app_id) don't create extra Firestore path segments
+const rawAppId = typeof __app_id !== 'undefined' && __app_id ? __app_id : 'trading-journal-prod';
+const appId = String(rawAppId).replace(/[^a-zA-Z0-9_-]/g, '_');
 
 const DashboardContext = React.createContext({});
 
@@ -55,16 +58,6 @@ const radarData = [
   { subject: 'Salida', score: 92, fullMark: 100 },
   { subject: 'Gestión Riesgo', score: 95, fullMark: 100 },
   { subject: 'Paciencia', score: 78, fullMark: 100 },
-];
-
-const scatterDurationData = [
-  { duration: 12, pnl: 210, isWin: true }, { duration: 25, pnl: -80, isWin: false },
-  { duration: 45, pnl: -200, isWin: false }, { duration: 55, pnl: 600, isWin: true },
-];
-
-const scatterTimeData = [
-  { trades: 3, pnl: 250, isWin: true }, { trades: 5, pnl: -120, isWin: false },
-  { trades: 7, pnl: 400, isWin: true }, { trades: 10, pnl: -300, isWin: false },
 ];
 
 const analyzeScreenshot = async (base64Data, customApiKey = "") => {
@@ -114,7 +107,11 @@ const CardTitle = ({ title, subtitle, icon: Icon }) => (
       <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">{title}</h3>
       {subtitle && <p className="text-xs text-gray-400 mt-0.5">{subtitle}</p>}
     </div>
-    {Icon && <Icon className="w-4 h-4 text-gray-400" />}
+    {Icon && typeof Icon === 'function' ? (
+      <Icon className="w-4 h-4 text-gray-400" />
+    ) : React.isValidElement(Icon) ? (
+      Icon
+    ) : null}
   </div>
 );
 
@@ -138,7 +135,6 @@ const SemiCircleGauge = ({ value, max, label, prefix = "", suffix = "", color = 
   );
 };
 
-// Helper to calculate business / operational days (Mon-Fri)
 const getRemainingTradingDays = (targetDateStr) => {
   if (!targetDateStr) return 0;
   const today = new Date();
@@ -234,7 +230,6 @@ const PropFirmTracker = ({ activeAccount, accountMeta, onEditAccount, netPnl }) 
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Días restantes */}
         <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-100 flex items-center gap-3">
           <div className="p-2 bg-white rounded-lg border border-slate-200 text-blue-600 shadow-2xs">
             <CalendarClock className="w-5 h-5" />
@@ -248,7 +243,6 @@ const PropFirmTracker = ({ activeAccount, accountMeta, onEditAccount, netPnl }) 
           </div>
         </div>
 
-        {/* Target de la prueba */}
         <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-100 flex items-center gap-3">
           <div className="p-2 bg-white rounded-lg border border-slate-200 text-emerald-600 shadow-2xs">
             <Target className="w-5 h-5" />
@@ -269,7 +263,6 @@ const PropFirmTracker = ({ activeAccount, accountMeta, onEditAccount, netPnl }) 
           </div>
         </div>
 
-        {/* Faltante */}
         <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-100 flex items-center gap-3">
           <div className="p-2 bg-white rounded-lg border border-slate-200 text-purple-600 shadow-2xs">
             <DollarSign className="w-5 h-5" />
@@ -284,7 +277,6 @@ const PropFirmTracker = ({ activeAccount, accountMeta, onEditAccount, netPnl }) 
           </div>
         </div>
 
-        {/* Promedio diario requerido */}
         <div className="p-3.5 rounded-xl bg-emerald-50/60 border border-emerald-100 flex items-center gap-3">
           <div className="p-2 bg-white rounded-lg border border-emerald-200 text-emerald-600 shadow-2xs">
             <Sparkles className="w-5 h-5" />
@@ -294,7 +286,7 @@ const PropFirmTracker = ({ activeAccount, accountMeta, onEditAccount, netPnl }) 
               {isFunded ? "Rendimiento Fondeada" : "Promedio Necesario"}
             </span>
             {isFunded ? (
-              <span className="text-xs font-semibold text-emerald-700">En fase de cobro y pagos</span>
+              <span className="text-xs font-semibold text-emerald-700">En fase de cobro y retiros</span>
             ) : remainingPnl === 0 ? (
               <span className="text-xs font-bold text-emerald-600">¡Prueba superada!</span>
             ) : tradingDaysLeft === 0 ? (
@@ -361,7 +353,6 @@ const AccountConfigModal = ({ isOpen, onClose, accountName, initialMeta, onSave 
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4 text-xs">
-          {/* Toggle Type */}
           <div>
             <label className="font-semibold block mb-1 text-gray-700">Estado de la Cuenta</label>
             <div className="grid grid-cols-2 gap-2">
@@ -661,7 +652,6 @@ const UploadModal = ({ isOpen, onClose, onSave, userId, existingAccounts = [] })
                     </h4>
                   </div>
                   
-                  {/* Account Selector */}
                   <div className="bg-white p-3 rounded-lg border border-gray-200">
                     <label className="text-xs font-semibold text-gray-700 flex items-center gap-1.5 mb-1.5">
                       <Wallet className="w-3.5 h-3.5 text-blue-500" /> Cuenta de Trading
@@ -846,7 +836,6 @@ const KpiRow = () => {
   }, [chartData, rawData]);
 
   const sparklineData = chartData.map(d => ({ v: d.cumulative }));
-
   const avgWinNum = Number(stats.avgWin) || 1;
   const avgLossNum = Number(stats.avgLoss) || 1;
   const totalAvg = avgWinNum + avgLossNum;
@@ -854,7 +843,6 @@ const KpiRow = () => {
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
-      {/* 1. Net PnL Card */}
       <Card>
         <CardTitle title="Net P&L" subtitle="Resultado Acumulado" icon={Activity} />
         <div className="flex flex-col justify-between h-24">
@@ -884,25 +872,21 @@ const KpiRow = () => {
         </div>
       </Card>
 
-      {/* 2. Trade Win % */}
       <Card>
         <CardTitle title="Trade Win %" subtitle="Tasa de Acierto" icon={Target} />
         <SemiCircleGauge value={stats.winRate} max={100} label="Win Rate" suffix="%" color={themeColors.emerald} />
       </Card>
 
-      {/* 3. Profit Factor */}
       <Card>
         <CardTitle title="Profit Factor" subtitle="Ratio Ganancia/Pérdida" icon={TrendingUp} />
         <SemiCircleGauge value={Number(stats.profitFactor)} max={5} label="Gross Win/Loss" color="#3B82F6" />
       </Card>
 
-      {/* 4. Day Win % */}
       <Card>
         <CardTitle title="Day Win %" subtitle="Días Ganadores" icon={CalendarDays} />
         <SemiCircleGauge value={stats.dayWinRate} max={100} label="Días Positivos" suffix="%" color={themeColors.emerald} />
       </Card>
 
-      {/* 5. Avg Win / Loss */}
       <Card>
         <CardTitle title="Avg Win / Loss" subtitle="Promedio Ganador/Perdedor" icon={ArrowUpRight} />
         <div className="flex flex-col justify-center h-24">
@@ -929,7 +913,6 @@ const MainChartsRow = () => {
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
-      {/* Columna 1: Radar Chart (Trade Score) */}
       <Card>
         <CardTitle title="Trade Score" subtitle="Evaluación operativa y disciplina" icon={Award} />
         <div className="h-64 w-full">
@@ -944,9 +927,8 @@ const MainChartsRow = () => {
         </div>
       </Card>
 
-      {/* Columna 2: Daily P&L Bar Chart */}
       <Card>
-        <CardTitle title="Daily P&L" subtitle="Resultado neto diario" icon={BarChart} />
+        <CardTitle title="Daily P&L" subtitle="Resultado neto diario" icon={BarChart2} />
         <div className="h-64 w-full">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={chartData}>
@@ -971,7 +953,6 @@ const MainChartsRow = () => {
         </div>
       </Card>
 
-      {/* Columna 3: Cumulative P&L Area Chart */}
       <Card>
         <CardTitle title="Cumulative P&L" subtitle="Curva de capital acumulado" icon={TrendingUp} />
         <div className="h-64 w-full">
@@ -1008,18 +989,16 @@ const MainChartsRow = () => {
 };
 
 const BottomRow = () => {
-  const { rawData, chartData, onDeleteTrade } = React.useContext(DashboardContext);
+  const { rawData, onDeleteTrade } = React.useContext(DashboardContext);
 
-  // Derive active display month from first available data point or current date
   const [currentDate, setCurrentDate] = useState(() => {
     if (rawData && rawData.length > 0) {
       const [y, m] = rawData[0].date.split('-').map(Number);
       return new Date(y, m - 1, 1);
     }
-    return new Date(2026, 8, 1); // Default to Sept 2026
+    return new Date(2026, 8, 1);
   });
 
-  // Keep calendar synced if rawData changes
   useEffect(() => {
     if (rawData && rawData.length > 0) {
       const [y, m] = rawData[0].date.split('-').map(Number);
@@ -1036,17 +1015,14 @@ const BottomRow = () => {
   const monthName = currentDate.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
   const capitalizedMonth = monthName.charAt(0).toUpperCase() + monthName.slice(1);
 
-  // Build calendar matrix (Mon-Sun)
   const calendarData = useMemo(() => {
     const firstDay = new Date(year, month, 1);
     const lastDay = new Date(year, month + 1, 0);
     const totalDays = lastDay.getDate();
 
-    // Convert getDay(): 0 (Sun) -> 6, 1 (Mon) -> 0
     let startDayIndex = firstDay.getDay() - 1;
     if (startDayIndex === -1) startDayIndex = 6;
 
-    // Create map from raw data for easy lookup: 'YYYY-MM-DD' => trade summary
     const tradeMap = new Map();
     (rawData && rawData.length > 0 ? rawData : defaultDailyPnLData).forEach(trade => {
       tradeMap.set(trade.date, trade);
@@ -1055,7 +1031,6 @@ const BottomRow = () => {
     const weeks = [];
     let currentWeek = [];
 
-    // Fill leading empty days
     for (let i = 0; i < startDayIndex; i++) {
       currentWeek.push(null);
     }
@@ -1071,28 +1046,25 @@ const BottomRow = () => {
       });
 
       if (currentWeek.length === 7) {
-        // Calculate weekly total
-        const weekPnl = currentWeek.reduce((acc, cell) => acc + (cell?.data?.netPnl || cell?.data?.pnl || 0), 0);
-        const weekTrades = currentWeek.reduce((acc, cell) => acc + (cell?.data?.totalTrades || cell?.data?.trades || 0), 0);
+        const weekPnl = currentWeek.reduce((acc, cell) => acc + (cell?.data?.netPnl !== undefined ? cell.data.netPnl : cell?.data?.pnl || 0), 0);
+        const weekTrades = currentWeek.reduce((acc, cell) => acc + (cell?.data?.totalTrades !== undefined ? cell.data.totalTrades : cell?.data?.trades || 0), 0);
         weeks.push({ days: currentWeek, totalPnl: weekPnl, totalTrades: weekTrades });
         currentWeek = [];
       }
     }
 
-    // Trailing empty days
     if (currentWeek.length > 0) {
       while (currentWeek.length < 7) {
         currentWeek.push(null);
       }
-      const weekPnl = currentWeek.reduce((acc, cell) => acc + (cell?.data?.netPnl || cell?.data?.pnl || 0), 0);
-      const weekTrades = currentWeek.reduce((acc, cell) => acc + (cell?.data?.totalTrades || cell?.data?.trades || 0), 0);
+      const weekPnl = currentWeek.reduce((acc, cell) => acc + (cell?.data?.netPnl !== undefined ? cell.data.netPnl : cell?.data?.pnl || 0), 0);
+      const weekTrades = currentWeek.reduce((acc, cell) => acc + (cell?.data?.totalTrades !== undefined ? cell.data.totalTrades : cell?.data?.trades || 0), 0);
       weeks.push({ days: currentWeek, totalPnl: weekPnl, totalTrades: weekTrades });
     }
 
     return weeks;
   }, [year, month, rawData]);
 
-  // Overtrading chart data: total trades vs PnL
   const overtradingScatterData = useMemo(() => {
     const list = rawData && rawData.length > 0 ? rawData : defaultDailyPnLData;
     return list.map(item => {
@@ -1108,7 +1080,6 @@ const BottomRow = () => {
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-      {/* 2/3 Left: Real Trading Calendar */}
       <Card className="lg:col-span-2 overflow-x-auto">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
           <div>
@@ -1129,9 +1100,7 @@ const BottomRow = () => {
           </div>
         </div>
 
-        {/* Calendar Grid */}
         <div className="min-w-[550px]">
-          {/* Day Headers */}
           <div className="grid grid-cols-8 gap-1.5 mb-1.5 text-center">
             {['LUN', 'MAR', 'MIÉ', 'JUE', 'VIE', 'SÁB', 'DOM'].map(d => (
               <div key={d} className="text-[10px] font-bold text-gray-400 uppercase py-1">{d}</div>
@@ -1139,7 +1108,6 @@ const BottomRow = () => {
             <div className="text-[10px] font-bold text-emerald-700 uppercase py-1 bg-emerald-50 rounded">SEMANA</div>
           </div>
 
-          {/* Weeks Rows */}
           <div className="space-y-1.5">
             {calendarData.map((week, wIdx) => (
               <div key={`w-${wIdx}`} className="grid grid-cols-8 gap-1.5">
@@ -1192,7 +1160,6 @@ const BottomRow = () => {
                   );
                 })}
 
-                {/* Weekly Summary Column */}
                 <div className={`h-16 p-1.5 rounded-lg border flex flex-col justify-center items-center text-center ${
                   week.totalPnl > 0 ? 'bg-emerald-50 border-emerald-200' : week.totalPnl < 0 ? 'bg-coral-50 border-coral-200' : 'bg-slate-50 border-slate-100'
                 }`}>
@@ -1208,7 +1175,6 @@ const BottomRow = () => {
         </div>
       </Card>
 
-      {/* 1/3 Right: Overtrading Analysis Scatter Plot */}
       <Card>
         <CardTitle title="Overtrading Analysis" subtitle="Total Trades vs P&L" icon={TrendingUp} />
         <div className="h-64 w-full">
@@ -1305,7 +1271,6 @@ const App = () => {
     return () => unsubscribe();
   }, []);
 
-  // Listen to accounts metadata (target, dates, status: eval vs funded)
   useEffect(() => {
     if (!user) return;
     const metaColRef = collection(db, 'artifacts', appId, 'users', user.uid, 'accounts_meta');
@@ -1381,7 +1346,6 @@ const App = () => {
       return [];
     }
 
-    // Group records occurring on the same date (e.g. across multiple accounts in consolidated view)
     const groupedMap = new Map();
     filteredTrades.forEach(item => {
       if (!groupedMap.has(item.date)) {
@@ -1426,7 +1390,7 @@ const App = () => {
   }, [filteredTrades, realTrades.length]);
 
   const formatMonthStr = (yyyy_mm) => {
-    const [y, m] = yyyy_mm.split('-');
+    const [y, m] = yyy_mm.split('-');
     const date = new Date(parseInt(y), parseInt(m) - 1, 1);
     return date.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }).replace(/^\w/, c => c.toUpperCase());
   };
@@ -1454,7 +1418,6 @@ const App = () => {
       <div className="min-h-screen bg-[#F8FAFC] text-slate-800 p-4 md:p-8 font-sans">
         <div className="max-w-[1600px] mx-auto">
           
-          {/* Header */}
           <header className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-4">
             <div>
               <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Trading Journal Dashboard</h1>
@@ -1468,7 +1431,6 @@ const App = () => {
             </div>
             
             <div className="flex flex-wrap items-center gap-3">
-              {/* Account Filter */}
               <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
                 <Wallet className="w-4 h-4 text-blue-500" />
                 <select
@@ -1483,7 +1445,6 @@ const App = () => {
                 </select>
               </div>
 
-              {/* Month Filter */}
               {realTrades.length > 0 && (
                 <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
                   <Calendar className="w-4 h-4 text-gray-500" />
@@ -1532,7 +1493,6 @@ const App = () => {
           )}
 
           <main>
-            {/* Prop Firm / Evaluacion de Fondeo Widget */}
             <PropFirmTracker 
               activeAccount={selectedAccount}
               accountMeta={currentAccountMeta}
