@@ -7,12 +7,14 @@ import {
 import { 
   ArrowUpRight, ArrowDownRight, Activity, Target, TrendingUp, 
   Clock, CalendarDays, Upload, X, Image as ImageIcon, Loader2, CheckCircle2,
-  ChevronLeft, ChevronRight, Calendar, Settings, Trash2, KeyRound, Database
+  ChevronLeft, ChevronRight, Calendar, Settings, Trash2, KeyRound, Database,
+  Wallet, DollarSign, Layers, Award, Timer, CalendarClock, Edit3, ShieldCheck,
+  CheckSquare, AlertCircle, Sparkles
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, doc, collection, onSnapshot, addDoc, deleteDoc } from 'firebase/firestore';
+import { getFirestore, doc, collection, onSnapshot, addDoc, setDoc, deleteDoc } from 'firebase/firestore';
 
 const projectFirebaseConfig = {
   apiKey: "AIzaSyD1ULw8t4rIbyOjcGdjXPWt560Vb0fS5-M",
@@ -32,10 +34,8 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'trading-journal-prod';
 
-// --- CONTEXT ---
 const DashboardContext = React.createContext({});
 
-// --- MOCK DATA (Fallback cuando aún no hay registros) ---
 const themeColors = {
   emerald: '#10B981',
   coral: '#EF4444',
@@ -44,9 +44,9 @@ const themeColors = {
 };
 
 const defaultDailyPnLData = [
-  { day: '1', date: '2026-09-01', pnl: 250, cumulative: 250, trades: 4, winRate: 75 },
-  { day: '2', date: '2026-09-02', pnl: -120, cumulative: 130, trades: 3, winRate: 33 },
-  { day: '3', date: '2026-09-03', pnl: 400, cumulative: 530, trades: 5, winRate: 80 },
+  { day: '1', date: '2026-09-01', pnl: 250, cumulative: 250, trades: 4, winRate: 75, account: 'Cuenta Principal' },
+  { day: '2', date: '2026-09-02', pnl: -120, cumulative: 130, trades: 3, winRate: 33, account: 'Cuenta Principal' },
+  { day: '3', date: '2026-09-03', pnl: 400, cumulative: 530, trades: 5, winRate: 80, account: 'Cuenta Principal' },
 ];
 
 const radarData = [
@@ -63,8 +63,8 @@ const scatterDurationData = [
 ];
 
 const scatterTimeData = [
-  { time: 9.5, pnl: 300, isWin: true }, { time: 10.5, pnl: -200, isWin: false },
-  { time: 14.5, pnl: 250, isWin: true }, { time: 15.2, pnl: -300, isWin: false },
+  { trades: 3, pnl: 250, isWin: true }, { trades: 5, pnl: -120, isWin: false },
+  { trades: 7, pnl: 400, isWin: true }, { trades: 10, pnl: -300, isWin: false },
 ];
 
 const analyzeScreenshot = async (base64Data, customApiKey = "") => {
@@ -72,28 +72,28 @@ const analyzeScreenshot = async (base64Data, customApiKey = "") => {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
   
   const payload = {
-      contents: [{
-          role: "user",
-          parts: [
-              { text: "Act as an expert trading data extractor. I am providing a screenshot of a trading platform daily summary (like NinjaTrader or Tradovate). Extract the following metrics:\n1. Date (look for things like 'Sep, 11', format as YYYY-MM-DD).\n2. Net PnL (Net profit/loss, usually a green or red number after fees. If only Gross PnL and Fees are visible, calculate Net PnL = Gross + Fees).\n3. Total Trades.\n4. Winning Trade %.\n5. Avg. Winning Trade.\n6. Avg. Losing Trade.\n\nReturn strictly a JSON object matching this schema exactly. Remove currency symbols and % signs, keep only numbers." },
-              { inlineData: { mimeType: "image/png", data: base64Data.split(',')[1] } }
-          ]
-      }],
-      generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema: {
-              type: "OBJECT",
-              properties: {
-                  date: { type: "STRING", description: "YYYY-MM-DD format" },
-                  netPnl: { type: "NUMBER" },
-                  totalTrades: { type: "INTEGER" },
-                  winRate: { type: "NUMBER" },
-                  avgWin: { type: "NUMBER" },
-                  avgLoss: { type: "NUMBER" }
-              },
-              required: ["date", "netPnl", "totalTrades", "winRate", "avgWin", "avgLoss"]
-          }
+    contents: [{
+      role: "user",
+      parts: [
+        { text: "Act as an expert trading data extractor. I am providing a screenshot of a trading platform daily summary (like NinjaTrader or Tradovate). Extract the following metrics:\n1. Date (format as YYYY-MM-DD. If year is missing, assume current year 2026).\n2. Net PnL (Net profit/loss, usually a green or red number after fees. If only Gross PnL and Fees are visible, calculate Net PnL = Gross + Fees).\n3. Total Trades.\n4. Winning Trade %.\n5. Avg. Winning Trade.\n6. Avg. Losing Trade.\n\nReturn strictly a JSON object matching this schema exactly. Remove currency symbols and % signs, keep only numbers." },
+        { inlineData: { mimeType: "image/png", data: base64Data.split(',')[1] } }
+      ]
+    }],
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: "OBJECT",
+        properties: {
+          date: { type: "STRING", description: "YYYY-MM-DD format" },
+          netPnl: { type: "NUMBER" },
+          totalTrades: { type: "INTEGER" },
+          winRate: { type: "NUMBER" },
+          avgWin: { type: "NUMBER" },
+          avgLoss: { type: "NUMBER" }
+        },
+        required: ["date", "netPnl", "totalTrades", "winRate", "avgWin", "avgLoss"]
       }
+    }
   };
 
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -109,7 +109,7 @@ const Card = ({ children, className = "" }) => (
 );
 
 const CardTitle = ({ title, subtitle, icon: Icon }) => (
-  <div className="flex items-center justify-between mb-4">
+  <div className="flex items-center justify-between mb-3">
     <div>
       <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">{title}</h3>
       {subtitle && <p className="text-xs text-gray-400 mt-0.5">{subtitle}</p>}
@@ -138,428 +138,325 @@ const SemiCircleGauge = ({ value, max, label, prefix = "", suffix = "", color = 
   );
 };
 
-const KpiRow = () => {
-  const { chartData, rawData } = React.useContext(DashboardContext);
-  
-  const isReal = rawData.length > 0;
-  const netPnl = chartData.reduce((sum, day) => sum + day.pnl, 0);
-  
-  const totalTrades = chartData.reduce((sum, day) => sum + day.trades, 0);
-  const totalWins = chartData.reduce((sum, day) => sum + (day.trades * (day.winRate / 100)), 0);
-  const aggregateWinRate = totalTrades > 0 ? Math.round((totalWins / totalTrades) * 100) : 0;
-  
-  const winDays = chartData.filter(d => d.pnl > 0).length;
-  const dayWinRate = chartData.length > 0 ? Math.round((winDays / chartData.length) * 100) : 0;
+// Helper to calculate business / operational days (Mon-Fri)
+const getRemainingTradingDays = (targetDateStr) => {
+  if (!targetDateStr) return 0;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const [y, m, d] = targetDateStr.split('-').map(Number);
+  const targetDate = new Date(y, m - 1, d);
+  targetDate.setHours(0, 0, 0, 0);
 
-  const avgWin = isReal ? (rawData.reduce((sum, d) => sum + d.avgWin, 0) / rawData.length) : 350.50;
-  const avgLoss = isReal ? (Math.abs(rawData.reduce((sum, d) => sum + d.avgLoss, 0) / rawData.length)) : 145.20;
-  const profitFactor = avgLoss > 0 ? (avgWin / avgLoss).toFixed(2) : 0;
+  if (targetDate < today) return 0;
+
+  let count = 0;
+  const cur = new Date(today);
+  while (cur <= targetDate) {
+    const dayOfWeek = cur.getDay();
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+      count++;
+    }
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
+};
+
+const getCalendarDaysLeft = (targetDateStr) => {
+  if (!targetDateStr) return 0;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const [y, m, d] = targetDateStr.split('-').map(Number);
+  const targetDate = new Date(y, m - 1, d);
+  targetDate.setHours(0, 0, 0, 0);
+
+  const diffTime = targetDate - today;
+  return Math.max(0, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
+};
+
+const PropFirmTracker = ({ activeAccount, accountMeta, onEditAccount, netPnl }) => {
+  const isAll = activeAccount === 'all';
+  const meta = accountMeta || {
+    type: 'eval',
+    targetProfit: 3000,
+    purchaseDate: '2026-09-01',
+    expirationDate: '2026-09-30',
+    initialBalance: 50000
+  };
+
+  const isFunded = meta.type === 'funded';
+  const target = Number(meta.targetProfit) || 3000;
+  const currentPnl = Number(netPnl) || 0;
+  const remainingPnl = Math.max(0, target - currentPnl);
   
-  const avgWinWidth = Math.min((avgWin / (avgWin + avgLoss)) * 100, 100);
-  const avgLossWidth = 100 - avgWinWidth;
+  const tradingDaysLeft = getRemainingTradingDays(meta.expirationDate);
+  const calDaysLeft = getCalendarDaysLeft(meta.expirationDate);
+  
+  const requiredDailyAvg = (!isFunded && tradingDaysLeft > 0) ? (remainingPnl / tradingDaysLeft) : 0;
+  const progressPercent = Math.min(100, Math.max(0, Math.round((currentPnl / target) * 100)));
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
-      <Card>
-        <CardTitle title="Net P&L" subtitle={isReal ? "Datos Reales" : "Datos Demo"} icon={Activity} />
-        <div className="flex items-end justify-between mt-2">
+    <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-5 mb-6 transition-all">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 pb-4 mb-4">
+        <div className="flex items-center gap-3">
+          <div className={`p-2.5 rounded-xl ${isFunded ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'}`}>
+            {isFunded ? <ShieldCheck className="w-6 h-6" /> : <Award className="w-6 h-6" />}
+          </div>
           <div>
-            <span className={`text-3xl font-bold ${netPnl >= 0 ? 'text-emerald-500' : 'text-coral-500'}`}>
-              {netPnl >= 0 ? '+' : ''}${netPnl.toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 2})}
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-bold text-slate-900">
+                {isAll ? "Meta de Fondeo (Vista Consolidada)" : `Cuenta: ${activeAccount}`}
+              </h2>
+              <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${
+                isFunded 
+                  ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' 
+                  : 'bg-amber-100 text-amber-800 border border-amber-200'
+              }`}>
+                {isFunded ? "🏆 Cuenta Fondeada" : "🎯 En Prueba de Evaluación"}
+              </span>
+            </div>
+            <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-2">
+              <span>Compra: <strong>{meta.purchaseDate || 'Sin asignar'}</strong></span>
+              <span>•</span>
+              <span>Vencimiento / Renovación: <strong>{meta.expirationDate || 'Sin asignar'}</strong></span>
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 self-end lg:self-center">
+          <button
+            onClick={onEditAccount}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 transition-colors shadow-xs"
+          >
+            <Edit3 className="w-3.5 h-3.5 text-blue-600" />
+            Configurar Fechas y Metas
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Días restantes */}
+        <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-100 flex items-center gap-3">
+          <div className="p-2 bg-white rounded-lg border border-slate-200 text-blue-600 shadow-2xs">
+            <CalendarClock className="w-5 h-5" />
+          </div>
+          <div>
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">Tiempo Restante</span>
+            <div className="flex items-baseline gap-1 mt-0.5">
+              <span className="text-lg font-black text-slate-800">{calDaysLeft}</span>
+              <span className="text-xs text-slate-500">días ({tradingDaysLeft} operativos)</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Target de la prueba */}
+        <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-100 flex items-center gap-3">
+          <div className="p-2 bg-white rounded-lg border border-slate-200 text-emerald-600 shadow-2xs">
+            <Target className="w-5 h-5" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex justify-between items-center">
+              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                {isFunded ? "Buffer de Retiro" : "Target de Paso"}
+              </span>
+              <span className="text-xs font-bold text-emerald-600">{progressPercent}%</span>
+            </div>
+            <div className="text-sm font-black text-slate-800 mt-0.5">
+              ${currentPnl.toFixed(0)} <span className="text-xs text-slate-400 font-normal">/ ${target.toLocaleString()}</span>
+            </div>
+            <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden mt-1.5">
+              <div className="bg-emerald-500 h-full rounded-full transition-all duration-700" style={{ width: `${progressPercent}%` }} />
+            </div>
+          </div>
+        </div>
+
+        {/* Faltante */}
+        <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-100 flex items-center gap-3">
+          <div className="p-2 bg-white rounded-lg border border-slate-200 text-purple-600 shadow-2xs">
+            <DollarSign className="w-5 h-5" />
+          </div>
+          <div>
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
+              {isFunded ? "Capital Generado" : "Falta para Pasar"}
+            </span>
+            <span className={`text-lg font-black ${remainingPnl === 0 ? 'text-emerald-600' : 'text-slate-800'}`}>
+              {remainingPnl === 0 ? "¡Objetivo Cumplido! 🎉" : `$${remainingPnl.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 1})}`}
             </span>
           </div>
         </div>
-        <div className="h-12 mt-2 w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData.slice(-7)}>
-              <Line type="monotone" dataKey="cumulative" stroke={themeColors.emerald} strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </Card>
 
-      <Card className="flex flex-col">
-        <CardTitle title="Trade Win %" icon={Target} />
-        <div className="flex-grow flex items-center justify-center">
-          <SemiCircleGauge value={aggregateWinRate} max={100} suffix="%" label="Win Rate" />
-        </div>
-      </Card>
-
-      <Card className="flex flex-col">
-        <CardTitle title="Profit Factor" icon={TrendingUp} />
-        <div className="flex-grow flex items-center justify-center">
-          <SemiCircleGauge value={profitFactor} max={5} label="Gross Win/Loss" color="#3B82F6" />
-        </div>
-      </Card>
-
-      <Card className="flex flex-col">
-        <CardTitle title="Day Win %" icon={CalendarDays} />
-        <div className="flex-grow flex items-center justify-center">
-          <SemiCircleGauge value={dayWinRate} max={100} suffix="%" label="Días Positivos" />
-        </div>
-      </Card>
-
-      <Card>
-        <CardTitle title="Avg Win / Loss" icon={Activity} />
-        <div className="mt-4">
-          <div className="flex justify-between text-sm font-semibold mb-2">
-            <span className="text-emerald-500">+${avgWin.toFixed(2)}</span>
-            <span className="text-coral-500">-${avgLoss.toFixed(2)}</span>
+        {/* Promedio diario requerido */}
+        <div className="p-3.5 rounded-xl bg-emerald-50/60 border border-emerald-100 flex items-center gap-3">
+          <div className="p-2 bg-white rounded-lg border border-emerald-200 text-emerald-600 shadow-2xs">
+            <Sparkles className="w-5 h-5" />
           </div>
-          <div className="w-full h-3 flex rounded-full overflow-hidden mb-2 bg-gray-100">
-            <div className="bg-emerald-500 h-full transition-all" style={{ width: `${avgWinWidth}%` }}></div>
-            <div className="bg-coral-500 h-full transition-all" style={{ width: `${avgLossWidth}%` }}></div>
-          </div>
-          <div className="flex justify-between text-[10px] text-gray-400 uppercase tracking-wider">
-            <span>Avg Ganador</span>
-            <span>Avg Perdedor</span>
+          <div>
+            <span className="text-[11px] font-bold text-emerald-800 uppercase tracking-wider block">
+              {isFunded ? "Rendimiento Fondeada" : "Promedio Necesario"}
+            </span>
+            {isFunded ? (
+              <span className="text-xs font-semibold text-emerald-700">En fase de cobro y pagos</span>
+            ) : remainingPnl === 0 ? (
+              <span className="text-xs font-bold text-emerald-600">¡Prueba superada!</span>
+            ) : tradingDaysLeft === 0 ? (
+              <span className="text-xs font-bold text-coral-600">Vencida / Renueva</span>
+            ) : (
+              <div className="flex items-baseline gap-1 mt-0.5">
+                <span className="text-lg font-black text-emerald-600">
+                  +${requiredDailyAvg.toFixed(1)}
+                </span>
+                <span className="text-xs text-emerald-700 font-medium">/día op.</span>
+              </div>
+            )}
           </div>
         </div>
-      </Card>
+      </div>
     </div>
   );
 };
 
-const MainChartsRow = () => {
-  const { chartData } = React.useContext(DashboardContext);
-
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-      <Card>
-        <CardTitle title="Trade Score" subtitle="Evaluación operativa" />
-        <div className="h-64">
-          <ResponsiveContainer width="100%" height="100%">
-            <RadarChart cx="50%" cy="50%" outerRadius="75%" data={radarData}>
-              <PolarGrid stroke={themeColors.lightGray} />
-              <PolarAngleAxis dataKey="subject" tick={{ fill: themeColors.gray, fontSize: 11, fontWeight: 500 }} />
-              <Radar name="Score" dataKey="score" stroke={themeColors.emerald} fill={themeColors.emerald} fillOpacity={0.3} />
-              <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }} />
-            </RadarChart>
-          </ResponsiveContainer>
-        </div>
-      </Card>
-
-      <Card>
-        <CardTitle title="Daily P&L" subtitle="Resultado neto diario" />
-        <div className="h-64">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={themeColors.lightGray} />
-              <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fill: themeColors.gray, fontSize: 10 }} />
-              <YAxis axisLine={false} tickLine={false} tick={{ fill: themeColors.gray, fontSize: 10 }} />
-              <Tooltip 
-                cursor={{ fill: 'transparent' }}
-                contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}
-                formatter={(value) => [`$${value}`, 'P&L']}
-              />
-              <Bar dataKey="pnl" radius={[4, 4, 4, 4]}>
-                {chartData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={entry.pnl >= 0 ? themeColors.emerald : themeColors.coral} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </Card>
-
-      <Card>
-        <CardTitle title="Cumulative P&L" subtitle="Curva de capital acumulado" />
-        <div className="h-64">
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-              <defs>
-                <linearGradient id="colorCumulative" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor={themeColors.emerald} stopOpacity={0.3}/>
-                  <stop offset="95%" stopColor={themeColors.emerald} stopOpacity={0}/>
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={themeColors.lightGray} />
-              <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fill: themeColors.gray, fontSize: 10 }} />
-              <YAxis axisLine={false} tickLine={false} tick={{ fill: themeColors.gray, fontSize: 10 }} />
-              <Tooltip 
-                contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}
-                formatter={(value) => [`$${value}`, 'Capital']}
-              />
-              <Area type="monotone" dataKey="cumulative" stroke={themeColors.emerald} strokeWidth={3} fillOpacity={1} fill="url(#colorCumulative)" />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      </Card>
-    </div>
-  );
-};
-
-const BottomRow = () => {
-  const { chartData, rawData, allTrades, dateFilter, onDeleteTrade } = React.useContext(DashboardContext);
-  
-  const [viewDate, setViewDate] = useState(() => {
-    const source = allTrades && allTrades.length > 0 ? allTrades : chartData;
-    if (source && source.length > 0) {
-      const lastDate = source[source.length - 1].date;
-      if (lastDate) {
-         const [y, m] = lastDate.split('-');
-         return new Date(parseInt(y), parseInt(m) - 1, 1); 
-      }
-    }
-    return new Date();
-  });
+const AccountConfigModal = ({ isOpen, onClose, accountName, initialMeta, onSave }) => {
+  const [type, setType] = useState(initialMeta?.type || 'eval');
+  const [targetProfit, setTargetProfit] = useState(initialMeta?.targetProfit || 3000);
+  const [purchaseDate, setPurchaseDate] = useState(initialMeta?.purchaseDate || '2026-09-01');
+  const [expirationDate, setExpirationDate] = useState(initialMeta?.expirationDate || '2026-09-30');
+  const [initialBalance, setInitialBalance] = useState(initialMeta?.initialBalance || 50000);
 
   useEffect(() => {
-    if (dateFilter && dateFilter !== 'all') {
-      const [y, m] = dateFilter.split('-');
-      setViewDate(new Date(parseInt(y), parseInt(m) - 1, 1));
-    } else if (allTrades && allTrades.length > 0) {
-      const lastDate = allTrades[allTrades.length - 1].date;
-      if (lastDate) {
-        const [y, m] = lastDate.split('-');
-        setViewDate(new Date(parseInt(y), parseInt(m) - 1, 1));
-      }
+    if (initialMeta) {
+      setType(initialMeta.type || 'eval');
+      setTargetProfit(initialMeta.targetProfit || 3000);
+      setPurchaseDate(initialMeta.purchaseDate || '2026-09-01');
+      setExpirationDate(initialMeta.expirationDate || '2026-09-30');
+      setInitialBalance(initialMeta.initialBalance || 50000);
     }
-  }, [dateFilter, allTrades?.length]);
+  }, [initialMeta]);
 
-  const monthNames = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+  if (!isOpen) return null;
 
-  const calendarWeeks = useMemo(() => {
-    const year = viewDate.getFullYear();
-    const month = viewDate.getMonth();
-
-    const firstDay = new Date(year, month, 1);
-    const lastDay = new Date(year, month + 1, 0);
-    const daysInMonth = lastDay.getDate();
-
-    let startDayIndex = firstDay.getDay() - 1;
-    if (startDayIndex === -1) startDayIndex = 6; 
-
-    const weeks = [];
-    let currentWeek = [];
-    let weekSummary = { pnl: 0, trades: 0 };
-
-    for (let i = 0; i < startDayIndex; i++) {
-      currentWeek.push({ isEmpty: true });
-    }
-
-    const sourceData = (allTrades && allTrades.length > 0) ? allTrades : chartData;
-
-    for (let d = 1; d <= daysInMonth; d++) {
-      const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-      const dayData = sourceData.find(t => t.date === dateStr) || {};
-      
-      const pnlVal = dayData.netPnl !== undefined ? dayData.netPnl : (dayData.pnl || 0);
-      const tradesVal = dayData.totalTrades !== undefined ? dayData.totalTrades : (dayData.trades || 0);
-      const winRateVal = dayData.winRate || 0;
-
-      currentWeek.push({
-        id: dayData.id,
-        date: d,
-        dateStr,
-        pnl: pnlVal,
-        trades: tradesVal,
-        winRate: winRateVal,
-        isEmpty: false,
-        hasRealRecord: Boolean(dayData.id)
-      });
-
-      weekSummary.pnl += pnlVal;
-      weekSummary.trades += tradesVal;
-
-      if (currentWeek.length === 7) {
-        weeks.push({ days: currentWeek, summary: weekSummary });
-        currentWeek = [];
-        weekSummary = { pnl: 0, trades: 0 };
-      }
-    }
-
-    if (currentWeek.length > 0) {
-      while (currentWeek.length < 7) {
-        currentWeek.push({ isEmpty: true });
-      }
-      weeks.push({ days: currentWeek, summary: weekSummary });
-    }
-
-    return weeks;
-  }, [allTrades, chartData, viewDate]);
-
-  const overtradingData = useMemo(() => {
-    if (!rawData || rawData.length === 0) return scatterTimeData;
-    
-    return rawData.map(day => ({
-      trades: day.totalTrades,
-      pnl: day.netPnl,
-      isWin: day.netPnl >= 0,
-      date: day.date
-    }));
-  }, [rawData]);
-
-  const profitFactorData = useMemo(() => {
-    if (!rawData || rawData.length === 0) return scatterDurationData;
-    
-    return rawData.filter(day => day.avgLoss !== 0).map(day => {
-       const profitFactor = Math.abs(day.avgWin / day.avgLoss);
-       return {
-         profitFactor: parseFloat(profitFactor.toFixed(2)),
-         winRate: day.winRate,
-         isWin: day.netPnl >= 0,
-         date: day.date
-       };
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onSave({
+      type,
+      targetProfit: Number(targetProfit) || 0,
+      purchaseDate,
+      expirationDate,
+      initialBalance: Number(initialBalance) || 0
     });
-  }, [rawData]);
+    onClose();
+  };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      <Card className="lg:col-span-2">
-        <div className="flex justify-between items-center mb-4">
+    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden p-6 space-y-4">
+        <div className="flex justify-between items-center border-b pb-3">
+          <div className="flex items-center gap-2">
+            <Award className="w-5 h-5 text-emerald-600" />
+            <h2 className="text-base font-bold text-slate-800">
+              Configurar Cuenta: <span className="text-emerald-600">{accountName === 'all' ? 'General' : accountName}</span>
+            </h2>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4 text-xs">
+          {/* Toggle Type */}
           <div>
-            <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Trading Calendar</h3>
-            <p className="text-xs text-gray-400 mt-0.5">Desempeño mensual exacto</p>
-          </div>
-          <div className="flex items-center gap-2 bg-gray-50 px-2 py-1.5 rounded-lg border border-gray-100">
-            <button 
-              onClick={() => setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() - 1, 1))} 
-              className="p-1 hover:bg-white hover:shadow-sm rounded transition-all"
-            >
-              <ChevronLeft className="w-4 h-4 text-gray-500"/>
-            </button>
-            <span className="text-sm font-bold text-gray-700 min-w-[140px] text-center">
-              {monthNames[viewDate.getMonth()]} {viewDate.getFullYear()}
-            </span>
-            <button 
-              onClick={() => setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 1))} 
-              className="p-1 hover:bg-white hover:shadow-sm rounded transition-all"
-            >
-              <ChevronRight className="w-4 h-4 text-gray-500"/>
-            </button>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-8 gap-2 mb-2 text-center">
-          {['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'].map(d => (
-            <div key={d} className="text-xs font-bold text-gray-400 uppercase">{d}</div>
-          ))}
-          <div className="text-xs font-bold text-gray-500 uppercase bg-gray-50 rounded py-1">Semana</div>
-        </div>
-
-        <div className="flex flex-col gap-2">
-          {calendarWeeks.map((week, wIdx) => (
-            <div key={`week-${wIdx}`} className="grid grid-cols-8 gap-2">
-              {week.days.map((day, dIdx) => {
-                if (day.isEmpty) {
-                  return <div key={`empty-${wIdx}-${dIdx}`} className="p-2 h-24 rounded-lg bg-transparent"></div>;
-                }
-
-                return (
-                  <div key={`day-${wIdx}-${dIdx}`} className={`p-2 h-24 border rounded-lg flex flex-col justify-between transition-all group relative
-                    ${day.trades > 0 && day.pnl >= 0 ? 'bg-emerald-50/50 border-emerald-100 hover:bg-emerald-50' : ''} 
-                    ${day.trades > 0 && day.pnl < 0 ? 'bg-red-50/50 border-coral-100 hover:bg-red-50' : ''}
-                    ${day.trades === 0 ? 'bg-gray-50/30 border-gray-100' : ''}
-                  `}>
-                    <div className="flex justify-between items-start">
-                      <span className={`text-xs font-medium ${day.trades > 0 ? 'text-gray-800' : 'text-gray-400'}`}>
-                        {day.date}
-                      </span>
-                      {day.trades > 0 && (
-                        <div className="flex items-center gap-1">
-                          <span className={`text-xs font-bold ${day.pnl >= 0 ? 'text-emerald-600' : 'text-coral-500'}`}>
-                            {day.pnl >= 0 ? '+' : ''}{day.pnl}
-                          </span>
-                          {day.hasRealRecord && onDeleteTrade && (
-                            <button
-                              onClick={() => onDeleteTrade(day.id)}
-                              title="Eliminar este registro"
-                              className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 hover:text-red-600 text-gray-400"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                    {day.trades > 0 && (
-                      <div className="flex justify-between items-end mt-auto">
-                        <div className="flex flex-col">
-                          <span className="text-[10px] text-gray-500">{day.trades} Trades</span>
-                        </div>
-                        <div className="text-[10px] font-semibold text-gray-600 bg-white px-1.5 py-0.5 rounded shadow-sm border border-gray-100">
-                          {day.winRate}% W
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-              
-              <div className={`p-2 h-24 rounded-lg flex flex-col justify-center items-center border-l-2
-                ${week.summary.trades === 0 ? 'bg-gray-50/30 border-gray-100' : 
-                  (week.summary.pnl >= 0 ? 'bg-emerald-50/30 border-emerald-200' : 'bg-red-50/30 border-coral-200')}
-              `}>
-                <span className="text-[10px] text-gray-500 uppercase font-semibold mb-1">P&L Neto</span>
-                {week.summary.trades > 0 ? (
-                  <>
-                    <span className={`text-sm font-bold ${week.summary.pnl >= 0 ? 'text-emerald-600' : 'text-coral-500'}`}>
-                      {week.summary.pnl >= 0 ? '+' : ''}${Math.abs(week.summary.pnl).toFixed(0)}
-                    </span>
-                    <span className="text-[10px] text-gray-400 mt-1">{week.summary.trades} trd</span>
-                  </>
-                ) : (
-                  <span className="text-sm font-bold text-gray-300">$0</span>
-                )}
-              </div>
+            <label className="font-semibold block mb-1 text-gray-700">Estado de la Cuenta</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setType('eval')}
+                className={`py-2 px-3 rounded-lg font-bold border text-center transition-all ${
+                  type === 'eval'
+                    ? 'bg-blue-50 border-blue-500 text-blue-700 shadow-xs'
+                    : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                }`}
+              >
+                🎯 En Prueba (Challenge)
+              </button>
+              <button
+                type="button"
+                onClick={() => setType('funded')}
+                className={`py-2 px-3 rounded-lg font-bold border text-center transition-all ${
+                  type === 'funded'
+                    ? 'bg-emerald-50 border-emerald-500 text-emerald-700 shadow-xs'
+                    : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                }`}
+              >
+                🏆 Fondeada (Real / PA)
+              </button>
             </div>
-          ))}
-        </div>
-      </Card>
-
-      <div className="flex flex-col gap-6">
-        <Card className="flex-1">
-          <CardTitle title="Overtrading Analysis" subtitle="Total Trades vs P&L" icon={Activity} />
-          <div className="h-48 mt-2">
-            <ResponsiveContainer width="100%" height="100%">
-              <ScatterChart margin={{ top: 10, right: 10, bottom: 0, left: -20 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={themeColors.lightGray} />
-                <XAxis type="number" dataKey="trades" name="Trades" axisLine={false} tickLine={false} tick={{ fill: themeColors.gray, fontSize: 10 }} />
-                <YAxis type="number" dataKey="pnl" name="P&L" unit="$" axisLine={false} tickLine={false} tick={{ fill: themeColors.gray, fontSize: 10 }} />
-                <ZAxis type="number" range={[50, 50]} />
-                <Tooltip 
-                  cursor={{ strokeDasharray: '3 3' }} 
-                  contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}
-                  formatter={(value, name) => [name === 'pnl' ? `$${value}` : value, name === 'pnl' ? 'P&L' : 'Trades']}
-                  labelFormatter={() => ''}
-                />
-                <Scatter data={overtradingData} shape="circle">
-                  {overtradingData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.isWin ? themeColors.emerald : themeColors.coral} fillOpacity={0.7} />
-                  ))}
-                </Scatter>
-              </ScatterChart>
-            </ResponsiveContainer>
           </div>
-          <p className="text-[10px] text-gray-400 mt-2 text-center">¿Pierdes dinero cuando realizas demasiados trades en el día?</p>
-        </Card>
 
-        <Card className="flex-1">
-          <CardTitle title="Calidad vs Win Rate" subtitle="Profit Factor vs Win %" icon={Target} />
-          <div className="h-48 mt-2">
-            <ResponsiveContainer width="100%" height="100%">
-              <ScatterChart margin={{ top: 10, right: 10, bottom: 0, left: -20 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={themeColors.lightGray} />
-                <XAxis type="number" dataKey="profitFactor" name="Profit Factor" axisLine={false} tickLine={false} tick={{ fill: themeColors.gray, fontSize: 10 }} domain={[0, 'auto']} />
-                <YAxis type="number" dataKey="winRate" name="Win Rate" unit="%" axisLine={false} tickLine={false} tick={{ fill: themeColors.gray, fontSize: 10 }} domain={[0, 100]} />
-                <ZAxis type="number" range={[50, 50]} />
-                <Tooltip 
-                  cursor={{ strokeDasharray: '3 3' }} 
-                  contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}
-                  formatter={(value, name) => [name === 'winRate' ? `${value}%` : value, name === 'winRate' ? 'Win Rate' : 'Profit Factor']}
-                  labelFormatter={() => ''}
-                />
-                <Scatter data={profitFactorData} shape="circle">
-                  {profitFactorData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.isWin ? themeColors.emerald : themeColors.coral} fillOpacity={0.7} />
-                  ))}
-                </Scatter>
-              </ScatterChart>
-            </ResponsiveContainer>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="font-semibold block mb-1 text-gray-700">Fecha de Compra</label>
+              <input
+                type="date"
+                value={purchaseDate}
+                onChange={(e) => setPurchaseDate(e.target.value)}
+                className="w-full p-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none"
+                required
+              />
+            </div>
+            <div>
+              <label className="font-semibold block mb-1 text-gray-700">Fecha de Vencimiento</label>
+              <input
+                type="date"
+                value={expirationDate}
+                onChange={(e) => setExpirationDate(e.target.value)}
+                className="w-full p-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none"
+                required
+              />
+            </div>
           </div>
-           <p className="text-[10px] text-gray-400 mt-2 text-center">Un alto Win % no compensa si tus pérdidas promedio son gigantes.</p>
-        </Card>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="font-semibold block mb-1 text-gray-700">Profit Target ($)</label>
+              <input
+                type="number"
+                value={targetProfit}
+                onChange={(e) => setTargetProfit(e.target.value)}
+                className="w-full p-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none font-semibold text-emerald-600"
+                placeholder="Ej: 3000"
+                required
+              />
+            </div>
+            <div>
+              <label className="font-semibold block mb-1 text-gray-700">Balance Inicial ($)</label>
+              <input
+                type="number"
+                value={initialBalance}
+                onChange={(e) => setInitialBalance(e.target.value)}
+                className="w-full p-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none"
+                placeholder="Ej: 50000"
+              />
+            </div>
+          </div>
+
+          <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-[11px] text-slate-600">
+            💡 El sistema calculará automáticamente los <strong>días hábiles operativos</strong> que te quedan antes del vencimiento y la cuota diaria exacta de ganancias para pasar la evaluación.
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2 border-t">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-xs font-medium text-gray-500 hover:text-gray-700"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              className="px-4 py-2 text-xs font-semibold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors shadow-xs"
+            >
+              Guardar Configuración
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );
@@ -627,7 +524,7 @@ const SettingsModal = ({ isOpen, onClose }) => {
               value={customFirebase}
               onChange={(e) => setCustomFirebase(e.target.value)}
             />
-            <p className="text-[10px] text-gray-400 mt-1">Pega la configuración de tu propio proyecto en firebase.google.com para tener tu propia base de datos permanente.</p>
+            <p className="text-[10px] text-gray-400 mt-1">Tu base de datos Firebase ya está configurada automáticamente.</p>
           </div>
         </div>
 
@@ -650,11 +547,13 @@ const SettingsModal = ({ isOpen, onClose }) => {
   );
 };
 
-const UploadModal = ({ isOpen, onClose, onSave, userId }) => {
+const UploadModal = ({ isOpen, onClose, onSave, userId, existingAccounts = [] }) => {
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState(null);
+  const [accountName, setAccountName] = useState('Cuenta Principal');
+  const [customAccountInput, setCustomAccountInput] = useState('');
   const [error, setError] = useState(null);
 
   if (!isOpen) return null;
@@ -687,11 +586,13 @@ const UploadModal = ({ isOpen, onClose, onSave, userId }) => {
 
   const handleSave = async () => {
     if (!formData || !userId) return;
+    const finalAccount = accountName === 'NEW' ? (customAccountInput.trim() || 'Cuenta Principal') : accountName;
     try {
       setLoading(true);
       const collectionRef = collection(db, 'artifacts', appId, 'users', userId, 'trading_days');
       await addDoc(collectionRef, {
         ...formData,
+        account: finalAccount,
         createdAt: new Date().toISOString()
       });
       onSave();
@@ -753,14 +654,42 @@ const UploadModal = ({ isOpen, onClose, onSave, userId }) => {
               )}
 
               {formData && (
-                <div className="bg-emerald-50/30 border border-emerald-100 rounded-xl p-4">
-                  <div className="flex justify-between items-center mb-3">
+                <div className="bg-emerald-50/30 border border-emerald-100 rounded-xl p-4 space-y-3">
+                  <div className="flex justify-between items-center">
                     <h4 className="text-xs font-bold text-emerald-800 uppercase tracking-wide flex items-center gap-1">
-                      <CheckCircle2 className="w-4 h-4" /> Revisa y edita los datos
+                      <CheckCircle2 className="w-4 h-4" /> Revisa y asigna cuenta
                     </h4>
                   </div>
-                  <p className="text-[10px] text-gray-500 mb-3">Asegúrate de que la fecha coincida con la de tu sesión operativa.</p>
                   
+                  {/* Account Selector */}
+                  <div className="bg-white p-3 rounded-lg border border-gray-200">
+                    <label className="text-xs font-semibold text-gray-700 flex items-center gap-1.5 mb-1.5">
+                      <Wallet className="w-3.5 h-3.5 text-blue-500" /> Cuenta de Trading
+                    </label>
+                    <select
+                      value={accountName}
+                      onChange={(e) => setAccountName(e.target.value)}
+                      className="w-full p-2 border border-gray-200 rounded-md text-xs font-medium focus:ring-2 focus:ring-emerald-500 outline-none"
+                    >
+                      <option value="Cuenta Principal">Cuenta Principal</option>
+                      {existingAccounts.filter(a => a !== 'Cuenta Principal').map(acc => (
+                        <option key={acc} value={acc}>{acc}</option>
+                      ))}
+                      <option value="NEW">+ Agregar nueva cuenta...</option>
+                    </select>
+
+                    {accountName === 'NEW' && (
+                      <input
+                        type="text"
+                        placeholder="Ej. Apex 50k #1, Topstep 100k, Personal..."
+                        value={customAccountInput}
+                        onChange={(e) => setCustomAccountInput(e.target.value)}
+                        className="mt-2 w-full p-2 border border-blue-200 rounded-md text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                        autoFocus
+                      />
+                    )}
+                  </div>
+
                   <div className="grid grid-cols-2 gap-3 text-sm">
                     <div className="flex flex-col">
                       <span className="text-gray-600 text-xs mb-1 font-medium">Fecha</span>
@@ -777,7 +706,7 @@ const UploadModal = ({ isOpen, onClose, onSave, userId }) => {
                         type="number" step="0.01" 
                         className={`p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white font-semibold ${formData.netPnl >= 0 ? 'text-emerald-600' : 'text-red-500'}`} 
                         value={formData.netPnl || 0} 
-                        onChange={e => setFormData({...formData, netPnl: parseFloat(e.target.value)})} 
+                        onChange={e => setFormData({...formData, netPnl: parseFloat(e.target.value) || 0})} 
                       />
                     </div>
                     <div className="flex flex-col">
@@ -839,12 +768,514 @@ const UploadModal = ({ isOpen, onClose, onSave, userId }) => {
   );
 };
 
+const KpiRow = () => {
+  const { chartData, rawData } = React.useContext(DashboardContext);
+
+  const stats = useMemo(() => {
+    if (!chartData || chartData.length === 0) {
+      return {
+        netPnl: 0,
+        winRate: 0,
+        profitFactor: 0,
+        dayWinRate: 0,
+        avgWin: 0,
+        avgLoss: 0,
+        operatingDays: 0,
+        avgDailyPnl: 0
+      };
+    }
+
+    const netPnl = chartData.reduce((acc, curr) => acc + (Number(curr.pnl) || 0), 0);
+    const operatingDays = chartData.filter(d => d.trades > 0 || d.pnl !== 0).length;
+    const avgDailyPnl = operatingDays > 0 ? netPnl / operatingDays : 0;
+
+    let totalTrades = 0;
+    let winningTrades = 0;
+    let grossWin = 0;
+    let grossLoss = 0;
+
+    if (rawData && rawData.length > 0) {
+      rawData.forEach(trade => {
+        const tCount = trade.totalTrades || 0;
+        const wRate = (trade.winRate || 0) / 100;
+        const wTrades = tCount * wRate;
+        totalTrades += tCount;
+        winningTrades += wTrades;
+
+        if (trade.netPnl > 0) {
+          grossWin += trade.netPnl;
+        } else {
+          grossLoss += Math.abs(trade.netPnl);
+        }
+      });
+    } else {
+      chartData.forEach(d => {
+        const tCount = d.trades || 0;
+        const wTrades = tCount * ((d.winRate || 0) / 100);
+        totalTrades += tCount;
+        winningTrades += wTrades;
+        if (d.pnl > 0) grossWin += d.pnl;
+        else grossLoss += Math.abs(d.pnl);
+      });
+    }
+
+    const winRate = totalTrades > 0 ? Math.round((winningTrades / totalTrades) * 100) : 0;
+    const profitFactor = grossLoss > 0 ? (grossWin / grossLoss).toFixed(2) : grossWin > 0 ? '99.9' : '0.00';
+    
+    const winningDays = chartData.filter(d => d.pnl > 0).length;
+    const dayWinRate = operatingDays > 0 ? Math.round((winningDays / operatingDays) * 100) : 0;
+
+    const avgWin = rawData && rawData.length > 0
+      ? (rawData.reduce((acc, curr) => acc + (curr.avgWin || 0), 0) / (rawData.filter(r => r.avgWin > 0).length || 1)).toFixed(2)
+      : '350.50';
+
+    const avgLoss = rawData && rawData.length > 0
+      ? (rawData.reduce((acc, curr) => acc + Math.abs(curr.avgLoss || 0), 0) / (rawData.filter(r => r.avgLoss !== 0).length || 1)).toFixed(2)
+      : '145.20';
+
+    return {
+      netPnl,
+      winRate,
+      profitFactor,
+      dayWinRate,
+      avgWin,
+      avgLoss,
+      operatingDays,
+      avgDailyPnl
+    };
+  }, [chartData, rawData]);
+
+  const sparklineData = chartData.map(d => ({ v: d.cumulative }));
+
+  const avgWinNum = Number(stats.avgWin) || 1;
+  const avgLossNum = Number(stats.avgLoss) || 1;
+  const totalAvg = avgWinNum + avgLossNum;
+  const winPercent = Math.round((avgWinNum / totalAvg) * 100);
+
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+      {/* 1. Net PnL Card */}
+      <Card>
+        <CardTitle title="Net P&L" subtitle="Resultado Acumulado" icon={Activity} />
+        <div className="flex flex-col justify-between h-24">
+          <div>
+            <div className={`text-2xl font-black ${stats.netPnl >= 0 ? 'text-emerald-600' : 'text-coral-500'}`}>
+              {stats.netPnl >= 0 ? `+$${stats.netPnl.toLocaleString()}` : `-$${Math.abs(stats.netPnl).toLocaleString()}`}
+            </div>
+            <div className="text-[11px] font-semibold text-slate-500 mt-0.5">
+              Promedio: <span className={stats.avgDailyPnl >= 0 ? 'text-emerald-600' : 'text-coral-500'}>
+                {stats.avgDailyPnl >= 0 ? `+$${stats.avgDailyPnl.toFixed(1)}` : `-$${Math.abs(stats.avgDailyPnl).toFixed(1)}`}
+              </span>/día
+            </div>
+          </div>
+          <div className="h-10 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={sparklineData.length > 0 ? sparklineData : [{ v: 0 }, { v: 100 }]}>
+                <Line 
+                  type="monotone" 
+                  dataKey="v" 
+                  stroke={stats.netPnl >= 0 ? themeColors.emerald : themeColors.coral} 
+                  strokeWidth={2} 
+                  dot={false} 
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </Card>
+
+      {/* 2. Trade Win % */}
+      <Card>
+        <CardTitle title="Trade Win %" subtitle="Tasa de Acierto" icon={Target} />
+        <SemiCircleGauge value={stats.winRate} max={100} label="Win Rate" suffix="%" color={themeColors.emerald} />
+      </Card>
+
+      {/* 3. Profit Factor */}
+      <Card>
+        <CardTitle title="Profit Factor" subtitle="Ratio Ganancia/Pérdida" icon={TrendingUp} />
+        <SemiCircleGauge value={Number(stats.profitFactor)} max={5} label="Gross Win/Loss" color="#3B82F6" />
+      </Card>
+
+      {/* 4. Day Win % */}
+      <Card>
+        <CardTitle title="Day Win %" subtitle="Días Ganadores" icon={CalendarDays} />
+        <SemiCircleGauge value={stats.dayWinRate} max={100} label="Días Positivos" suffix="%" color={themeColors.emerald} />
+      </Card>
+
+      {/* 5. Avg Win / Loss */}
+      <Card>
+        <CardTitle title="Avg Win / Loss" subtitle="Promedio Ganador/Perdedor" icon={ArrowUpRight} />
+        <div className="flex flex-col justify-center h-24">
+          <div className="flex justify-between items-baseline mb-2">
+            <span className="text-sm font-bold text-emerald-600">+${stats.avgWin}</span>
+            <span className="text-sm font-bold text-coral-500">-${stats.avgLoss}</span>
+          </div>
+          <div className="w-full bg-coral-100 h-2 rounded-full overflow-hidden flex">
+            <div className="bg-emerald-500 h-full transition-all duration-700" style={{ width: `${winPercent}%` }} />
+            <div className="bg-coral-500 h-full transition-all duration-700" style={{ width: `${100 - winPercent}%` }} />
+          </div>
+          <div className="flex justify-between text-[10px] text-gray-400 mt-1 uppercase font-semibold">
+            <span>Avg Win</span>
+            <span>Avg Loss</span>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+};
+
+const MainChartsRow = () => {
+  const { chartData } = React.useContext(DashboardContext);
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+      {/* Columna 1: Radar Chart (Trade Score) */}
+      <Card>
+        <CardTitle title="Trade Score" subtitle="Evaluación operativa y disciplina" icon={Award} />
+        <div className="h-64 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <RadarChart cx="50%" cy="50%" outerRadius="75%" data={radarData}>
+              <PolarGrid stroke="#E2E8F0" />
+              <PolarAngleAxis dataKey="subject" tick={{ fill: '#64748B', fontSize: 11 }} />
+              <PolarRadiusAxis angle={30} domain={[0, 100]} tick={false} axisLine={false} />
+              <Radar name="Score" dataKey="score" stroke={themeColors.emerald} fill={themeColors.emerald} fillOpacity={0.4} />
+            </RadarChart>
+          </ResponsiveContainer>
+        </div>
+      </Card>
+
+      {/* Columna 2: Daily P&L Bar Chart */}
+      <Card>
+        <CardTitle title="Daily P&L" subtitle="Resultado neto diario" icon={BarChart} />
+        <div className="h-64 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
+              <XAxis dataKey="day" stroke="#94A3B8" fontSize={11} tickLine={false} />
+              <YAxis stroke="#94A3B8" fontSize={11} tickLine={false} tickFormatter={v => `$${v}`} />
+              <Tooltip 
+                formatter={(val) => [`$${val}`, 'P&L']}
+                labelFormatter={(label) => `Día ${label}`}
+                contentStyle={{ borderRadius: '8px', border: '1px solid #E2E8F0', fontSize: '12px' }}
+              />
+              <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>
+                {chartData.map((entry, index) => (
+                  <Cell 
+                    key={`cell-${index}`} 
+                    fill={entry.pnl >= 0 ? themeColors.emerald : themeColors.coral} 
+                  />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </Card>
+
+      {/* Columna 3: Cumulative P&L Area Chart */}
+      <Card>
+        <CardTitle title="Cumulative P&L" subtitle="Curva de capital acumulado" icon={TrendingUp} />
+        <div className="h-64 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={chartData}>
+              <defs>
+                <linearGradient id="pnlCurveGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={themeColors.emerald} stopOpacity={0.35}/>
+                  <stop offset="95%" stopColor={themeColors.emerald} stopOpacity={0.0}/>
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
+              <XAxis dataKey="day" stroke="#94A3B8" fontSize={11} tickLine={false} />
+              <YAxis stroke="#94A3B8" fontSize={11} tickLine={false} tickFormatter={v => `$${v}`} />
+              <Tooltip 
+                formatter={(val) => [`$${val}`, 'Acumulado']}
+                labelFormatter={(label) => `Día ${label}`}
+                contentStyle={{ borderRadius: '8px', border: '1px solid #E2E8F0', fontSize: '12px' }}
+              />
+              <Area 
+                type="monotone" 
+                dataKey="cumulative" 
+                stroke={themeColors.emerald} 
+                strokeWidth={2.5} 
+                fillOpacity={1} 
+                fill="url(#pnlCurveGrad)" 
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      </Card>
+    </div>
+  );
+};
+
+const BottomRow = () => {
+  const { rawData, chartData, onDeleteTrade } = React.useContext(DashboardContext);
+
+  // Derive active display month from first available data point or current date
+  const [currentDate, setCurrentDate] = useState(() => {
+    if (rawData && rawData.length > 0) {
+      const [y, m] = rawData[0].date.split('-').map(Number);
+      return new Date(y, m - 1, 1);
+    }
+    return new Date(2026, 8, 1); // Default to Sept 2026
+  });
+
+  // Keep calendar synced if rawData changes
+  useEffect(() => {
+    if (rawData && rawData.length > 0) {
+      const [y, m] = rawData[0].date.split('-').map(Number);
+      setCurrentDate(new Date(y, m - 1, 1));
+    }
+  }, [rawData]);
+
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
+
+  const prevMonth = () => setCurrentDate(new Date(year, month - 1, 1));
+  const nextMonth = () => setCurrentDate(new Date(year, month + 1, 1));
+
+  const monthName = currentDate.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
+  const capitalizedMonth = monthName.charAt(0).toUpperCase() + monthName.slice(1);
+
+  // Build calendar matrix (Mon-Sun)
+  const calendarData = useMemo(() => {
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const totalDays = lastDay.getDate();
+
+    // Convert getDay(): 0 (Sun) -> 6, 1 (Mon) -> 0
+    let startDayIndex = firstDay.getDay() - 1;
+    if (startDayIndex === -1) startDayIndex = 6;
+
+    // Create map from raw data for easy lookup: 'YYYY-MM-DD' => trade summary
+    const tradeMap = new Map();
+    (rawData && rawData.length > 0 ? rawData : defaultDailyPnLData).forEach(trade => {
+      tradeMap.set(trade.date, trade);
+    });
+
+    const weeks = [];
+    let currentWeek = [];
+
+    // Fill leading empty days
+    for (let i = 0; i < startDayIndex; i++) {
+      currentWeek.push(null);
+    }
+
+    for (let day = 1; day <= totalDays; day++) {
+      const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      const dayData = tradeMap.get(dateStr) || null;
+
+      currentWeek.push({
+        day,
+        date: dateStr,
+        data: dayData
+      });
+
+      if (currentWeek.length === 7) {
+        // Calculate weekly total
+        const weekPnl = currentWeek.reduce((acc, cell) => acc + (cell?.data?.netPnl || cell?.data?.pnl || 0), 0);
+        const weekTrades = currentWeek.reduce((acc, cell) => acc + (cell?.data?.totalTrades || cell?.data?.trades || 0), 0);
+        weeks.push({ days: currentWeek, totalPnl: weekPnl, totalTrades: weekTrades });
+        currentWeek = [];
+      }
+    }
+
+    // Trailing empty days
+    if (currentWeek.length > 0) {
+      while (currentWeek.length < 7) {
+        currentWeek.push(null);
+      }
+      const weekPnl = currentWeek.reduce((acc, cell) => acc + (cell?.data?.netPnl || cell?.data?.pnl || 0), 0);
+      const weekTrades = currentWeek.reduce((acc, cell) => acc + (cell?.data?.totalTrades || cell?.data?.trades || 0), 0);
+      weeks.push({ days: currentWeek, totalPnl: weekPnl, totalTrades: weekTrades });
+    }
+
+    return weeks;
+  }, [year, month, rawData]);
+
+  // Overtrading chart data: total trades vs PnL
+  const overtradingScatterData = useMemo(() => {
+    const list = rawData && rawData.length > 0 ? rawData : defaultDailyPnLData;
+    return list.map(item => {
+      const pnl = item.netPnl !== undefined ? item.netPnl : item.pnl;
+      const trades = item.totalTrades !== undefined ? item.totalTrades : item.trades;
+      return {
+        trades: trades || 0,
+        pnl: pnl || 0,
+        isWin: pnl >= 0
+      };
+    });
+  }, [rawData]);
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      {/* 2/3 Left: Real Trading Calendar */}
+      <Card className="lg:col-span-2 overflow-x-auto">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+          <div>
+            <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Trading Calendar</h3>
+            <p className="text-xs text-gray-400 mt-0.5">Desempeño mensual exacto</p>
+          </div>
+          
+          <div className="flex items-center gap-2">
+            <button onClick={prevMonth} className="p-1.5 hover:bg-gray-100 rounded-lg text-gray-500 transition-colors">
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <span className="text-xs font-bold text-gray-700 min-w-[120px] text-center">
+              {capitalizedMonth}
+            </span>
+            <button onClick={nextMonth} className="p-1.5 hover:bg-gray-100 rounded-lg text-gray-500 transition-colors">
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Calendar Grid */}
+        <div className="min-w-[550px]">
+          {/* Day Headers */}
+          <div className="grid grid-cols-8 gap-1.5 mb-1.5 text-center">
+            {['LUN', 'MAR', 'MIÉ', 'JUE', 'VIE', 'SÁB', 'DOM'].map(d => (
+              <div key={d} className="text-[10px] font-bold text-gray-400 uppercase py-1">{d}</div>
+            ))}
+            <div className="text-[10px] font-bold text-emerald-700 uppercase py-1 bg-emerald-50 rounded">SEMANA</div>
+          </div>
+
+          {/* Weeks Rows */}
+          <div className="space-y-1.5">
+            {calendarData.map((week, wIdx) => (
+              <div key={`w-${wIdx}`} className="grid grid-cols-8 gap-1.5">
+                {week.days.map((cell, dIdx) => {
+                  if (!cell) {
+                    return <div key={`empty-${wIdx}-${dIdx}`} className="h-16 bg-slate-50/50 rounded-lg border border-slate-100/60" />;
+                  }
+
+                  const pnl = cell.data ? (cell.data.netPnl !== undefined ? cell.data.netPnl : cell.data.pnl) : null;
+                  const trades = cell.data ? (cell.data.totalTrades !== undefined ? cell.data.totalTrades : cell.data.trades) : null;
+                  const winRate = cell.data?.winRate;
+                  const isPositive = pnl !== null && pnl >= 0;
+
+                  return (
+                    <div 
+                      key={`cell-${cell.date}`} 
+                      className={`h-16 p-1.5 rounded-lg border flex flex-col justify-between transition-all relative group ${
+                        cell.data 
+                          ? isPositive 
+                            ? 'bg-emerald-50/40 border-emerald-200' 
+                            : 'bg-coral-50/40 border-coral-200'
+                          : 'bg-white border-slate-100'
+                      }`}
+                    >
+                      <div className="flex justify-between items-start">
+                        <span className="text-[11px] font-bold text-slate-700">{cell.day}</span>
+                        {cell.data && cell.data.id && onDeleteTrade && (
+                          <button
+                            onClick={() => onDeleteTrade(cell.data.id)}
+                            title="Eliminar registro"
+                            className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-coral-500 transition-opacity p-0.5"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        )}
+                        {cell.data && (
+                          <span className={`text-[11px] font-black ${isPositive ? 'text-emerald-600' : 'text-coral-500'}`}>
+                            {isPositive ? `+${pnl}` : pnl}
+                          </span>
+                        )}
+                      </div>
+
+                      {cell.data && (
+                        <div className="flex justify-between text-[9px] text-slate-500">
+                          <span>{trades} Trd</span>
+                          {winRate !== undefined && <span>{winRate}% W</span>}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {/* Weekly Summary Column */}
+                <div className={`h-16 p-1.5 rounded-lg border flex flex-col justify-center items-center text-center ${
+                  week.totalPnl > 0 ? 'bg-emerald-50 border-emerald-200' : week.totalPnl < 0 ? 'bg-coral-50 border-coral-200' : 'bg-slate-50 border-slate-100'
+                }`}>
+                  <span className="text-[9px] font-bold text-slate-400 uppercase">P&L Neto</span>
+                  <span className={`text-xs font-black ${week.totalPnl >= 0 ? 'text-emerald-600' : 'text-coral-500'}`}>
+                    {week.totalPnl >= 0 ? `+$${week.totalPnl}` : `-$${Math.abs(week.totalPnl)}`}
+                  </span>
+                  <span className="text-[9px] text-slate-500 font-medium">{week.totalTrades} trd</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </Card>
+
+      {/* 1/3 Right: Overtrading Analysis Scatter Plot */}
+      <Card>
+        <CardTitle title="Overtrading Analysis" subtitle="Total Trades vs P&L" icon={TrendingUp} />
+        <div className="h-64 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <ScatterChart margin={{ top: 10, right: 10, bottom: 20, left: -10 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
+              <XAxis 
+                type="number" 
+                dataKey="trades" 
+                name="Trades" 
+                stroke="#94A3B8" 
+                fontSize={11} 
+                label={{ value: 'Total Trades', position: 'insideBottom', offset: -10, fontSize: 10, fill: '#94A3B8' }}
+              />
+              <YAxis 
+                type="number" 
+                dataKey="pnl" 
+                name="P&L" 
+                stroke="#94A3B8" 
+                fontSize={11} 
+                tickFormatter={v => `$${v}`} 
+              />
+              <Tooltip 
+                cursor={{ strokeDasharray: '3 3' }}
+                content={({ payload }) => {
+                  if (payload && payload.length) {
+                    const data = payload[0].payload;
+                    return (
+                      <div className="bg-white p-2 rounded-lg shadow-sm border border-slate-100 text-xs">
+                        <p className="font-bold text-slate-800">Trades: {data.trades}</p>
+                        <p className={`font-semibold ${data.pnl >= 0 ? 'text-emerald-600' : 'text-coral-500'}`}>
+                          P&L: ${data.pnl}
+                        </p>
+                      </div>
+                    );
+                  }
+                  return null;
+                }}
+              />
+              <Scatter data={overtradingScatterData}>
+                {overtradingScatterData.map((entry, index) => (
+                  <Cell 
+                    key={`scatter-${index}`} 
+                    fill={entry.isWin ? themeColors.emerald : themeColors.coral} 
+                  />
+                ))}
+              </Scatter>
+            </ScatterChart>
+          </ResponsiveContainer>
+        </div>
+        <p className="text-[10px] text-slate-400 mt-2 text-center">
+          Puntos verdes = Ganadores • Puntos rojos = Perdedores
+        </p>
+      </Card>
+    </div>
+  );
+};
+
 const App = () => {
   const [user, setUser] = useState(null);
   const [realTrades, setRealTrades] = useState([]);
+  const [accountsMeta, setAccountsMeta] = useState({});
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isAccountConfigOpen, setIsAccountConfigOpen] = useState(false);
   const [dateFilter, setDateFilter] = useState('all');
+  const [selectedAccount, setSelectedAccount] = useState('all');
   const [authErrorMsg, setAuthErrorMsg] = useState(null);
 
   useEffect(() => {
@@ -874,6 +1305,21 @@ const App = () => {
     return () => unsubscribe();
   }, []);
 
+  // Listen to accounts metadata (target, dates, status: eval vs funded)
+  useEffect(() => {
+    if (!user) return;
+    const metaColRef = collection(db, 'artifacts', appId, 'users', user.uid, 'accounts_meta');
+    const unsubscribe = onSnapshot(metaColRef, (snapshot) => {
+      const metas = {};
+      snapshot.docs.forEach(docSnap => {
+        metas[docSnap.id] = docSnap.data();
+      });
+      setAccountsMeta(metas);
+    }, (error) => console.error("Error loading accounts meta:", error));
+
+    return () => unsubscribe();
+  }, [user]);
+
   useEffect(() => {
     if (!user) return;
     const collectionRef = collection(db, 'artifacts', appId, 'users', user.uid, 'trading_days');
@@ -886,6 +1332,17 @@ const App = () => {
     return () => unsubscribe();
   }, [user]);
 
+  const handleSaveAccountMeta = async (newMeta) => {
+    if (!user) return;
+    const accountKey = selectedAccount === 'all' ? 'Cuenta Principal' : selectedAccount;
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'accounts_meta', accountKey);
+      await setDoc(docRef, { ...newMeta, updatedAt: new Date().toISOString() }, { merge: true });
+    } catch (err) {
+      console.error("Error saving account meta:", err);
+    }
+  };
+
   const handleDeleteTrade = async (docId) => {
     if (!user || !docId) return;
     try {
@@ -896,34 +1353,74 @@ const App = () => {
     }
   };
 
-  const availableMonths = useMemo(() => {
-    if (!realTrades || realTrades.length === 0) return [];
-    const months = new Set(realTrades.map(t => t.date.substring(0, 7)));
-    return Array.from(months).sort().reverse();
+  const existingAccounts = useMemo(() => {
+    if (!realTrades || realTrades.length === 0) return ['Cuenta Principal'];
+    const accs = new Set(realTrades.map(t => t.account || 'Cuenta Principal'));
+    return Array.from(accs);
   }, [realTrades]);
 
+  const accountFilteredTrades = useMemo(() => {
+    if (selectedAccount === 'all') return realTrades;
+    return realTrades.filter(t => (t.account || 'Cuenta Principal') === selectedAccount);
+  }, [realTrades, selectedAccount]);
+
+  const availableMonths = useMemo(() => {
+    if (!accountFilteredTrades || accountFilteredTrades.length === 0) return [];
+    const months = new Set(accountFilteredTrades.map(t => t.date.substring(0, 7)));
+    return Array.from(months).sort().reverse();
+  }, [accountFilteredTrades]);
+
   const filteredTrades = useMemo(() => {
-    if (dateFilter === 'all') return realTrades;
-    return realTrades.filter(t => t.date.startsWith(dateFilter));
-  }, [realTrades, dateFilter]);
+    if (dateFilter === 'all') return accountFilteredTrades;
+    return accountFilteredTrades.filter(t => t.date.startsWith(dateFilter));
+  }, [accountFilteredTrades, dateFilter]);
 
   const chartData = useMemo(() => {
     if (filteredTrades.length === 0) {
       if (realTrades.length === 0) return defaultDailyPnLData;
       return [];
     }
-    
+
+    // Group records occurring on the same date (e.g. across multiple accounts in consolidated view)
+    const groupedMap = new Map();
+    filteredTrades.forEach(item => {
+      if (!groupedMap.has(item.date)) {
+        groupedMap.set(item.date, {
+          id: item.id,
+          date: item.date,
+          pnl: item.netPnl,
+          trades: item.totalTrades,
+          winTrades: item.totalTrades * ((item.winRate || 0) / 100),
+          avgWin: item.avgWin || 0,
+          avgLoss: item.avgLoss || 0,
+          entriesCount: 1
+        });
+      } else {
+        const current = groupedMap.get(item.date);
+        current.pnl += item.netPnl;
+        current.trades += item.totalTrades;
+        current.winTrades += item.totalTrades * ((item.winRate || 0) / 100);
+        current.avgWin = (current.avgWin + (item.avgWin || 0)) / 2;
+        current.avgLoss = (current.avgLoss + (item.avgLoss || 0)) / 2;
+        current.entriesCount += 1;
+      }
+    });
+
+    const sortedDates = Array.from(groupedMap.keys()).sort();
     let cumulative = 0;
-    return filteredTrades.map((t, i) => {
-      cumulative += t.netPnl;
+
+    return sortedDates.map((dStr, i) => {
+      const dData = groupedMap.get(dStr);
+      cumulative += dData.pnl;
+      const calcWinRate = dData.trades > 0 ? Math.round((dData.winTrades / dData.trades) * 100) : 0;
       return {
-        id: t.id,
+        id: dData.id,
         day: (i + 1).toString(),
-        date: t.date,
-        pnl: t.netPnl,
+        date: dStr,
+        pnl: dData.pnl,
         cumulative: cumulative,
-        trades: t.totalTrades,
-        winRate: t.winRate
+        trades: dData.trades,
+        winRate: calcWinRate
       };
     });
   }, [filteredTrades, realTrades.length]);
@@ -934,20 +1431,33 @@ const App = () => {
     return date.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }).replace(/^\w/, c => c.toUpperCase());
   };
 
+  const activeAccountKey = selectedAccount === 'all' ? 'Cuenta Principal' : selectedAccount;
+  const currentAccountMeta = accountsMeta[activeAccountKey] || {
+    type: 'eval',
+    targetProfit: 3000,
+    purchaseDate: '2026-09-01',
+    expirationDate: '2026-09-30',
+    initialBalance: 50000
+  };
+
+  const currentAccountNetPnl = chartData.reduce((sum, day) => sum + day.pnl, 0);
+
   return (
     <DashboardContext.Provider value={{ 
       chartData, 
       rawData: filteredTrades, 
       allTrades: realTrades, 
       dateFilter,
+      selectedAccount,
       onDeleteTrade: handleDeleteTrade
     }}>
       <div className="min-h-screen bg-[#F8FAFC] text-slate-800 p-4 md:p-8 font-sans">
         <div className="max-w-[1600px] mx-auto">
           
-          <header className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
+          {/* Header */}
+          <header className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-4">
             <div>
-              <h1 className="text-2xl font-bold text-slate-900">Trading Journal Dashboard</h1>
+              <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Trading Journal Dashboard</h1>
               <p className="text-sm text-gray-500 mt-1 flex items-center gap-2">
                 {realTrades.length > 0 ? (
                   <span className="flex items-center gap-1 text-emerald-600"><CheckCircle2 className="w-4 h-4"/> Sincronizado en tiempo real</span>
@@ -956,12 +1466,29 @@ const App = () => {
                 )}
               </p>
             </div>
+            
             <div className="flex flex-wrap items-center gap-3">
+              {/* Account Filter */}
+              <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
+                <Wallet className="w-4 h-4 text-blue-500" />
+                <select
+                  className="bg-transparent border-none text-xs font-semibold text-gray-700 focus:outline-none cursor-pointer"
+                  value={selectedAccount}
+                  onChange={(e) => setSelectedAccount(e.target.value)}
+                >
+                  <option value="all">Consolidado (Todas las cuentas)</option>
+                  {existingAccounts.map(acc => (
+                    <option key={acc} value={acc}>{acc}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Month Filter */}
               {realTrades.length > 0 && (
-                <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2.5 shadow-sm">
+                <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
                   <Calendar className="w-4 h-4 text-gray-500" />
                   <select
-                    className="bg-transparent border-none text-sm font-medium text-gray-700 focus:outline-none cursor-pointer"
+                    className="bg-transparent border-none text-xs font-semibold text-gray-700 focus:outline-none cursor-pointer"
                     value={dateFilter}
                     onChange={(e) => setDateFilter(e.target.value)}
                   >
@@ -972,6 +1499,7 @@ const App = () => {
                   </select>
                 </div>
               )}
+
               <button 
                 onClick={() => setIsSettingsOpen(true)}
                 title="Configuración de Credenciales"
@@ -979,6 +1507,7 @@ const App = () => {
               >
                 <Settings className="w-4 h-4" />
               </button>
+              
               <button 
                 onClick={() => setIsModalOpen(true)}
                 className="px-4 py-2.5 bg-emerald-500 text-white rounded-lg text-sm font-medium hover:bg-emerald-600 shadow-sm transition-colors flex items-center gap-2"
@@ -1003,6 +1532,14 @@ const App = () => {
           )}
 
           <main>
+            {/* Prop Firm / Evaluacion de Fondeo Widget */}
+            <PropFirmTracker 
+              activeAccount={selectedAccount}
+              accountMeta={currentAccountMeta}
+              netPnl={currentAccountNetPnl}
+              onEditAccount={() => setIsAccountConfigOpen(true)}
+            />
+
             <KpiRow />
             <MainChartsRow />
             <BottomRow />
@@ -1016,11 +1553,20 @@ const App = () => {
         onClose={() => setIsModalOpen(false)} 
         onSave={() => setIsModalOpen(false)}
         userId={user?.uid}
+        existingAccounts={existingAccounts}
       />
 
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
+      />
+
+      <AccountConfigModal
+        isOpen={isAccountConfigOpen}
+        onClose={() => setIsAccountConfigOpen(false)}
+        accountName={selectedAccount}
+        initialMeta={currentAccountMeta}
+        onSave={handleSaveAccountMeta}
       />
     </DashboardContext.Provider>
   );
