@@ -62,7 +62,7 @@ const radarData = [
 
 const analyzeScreenshot = async (base64Data, customApiKey = "") => {
   const apiKey = customApiKey || (typeof window !== 'undefined' ? window.localStorage?.getItem('gemini_api_key') : "") || "";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
   
   const payload = {
     contents: [{
