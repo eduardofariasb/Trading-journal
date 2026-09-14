@@ -9,12 +9,12 @@ import {
   CalendarDays, Upload, X, Image as ImageIcon, Loader2, CheckCircle2,
   ChevronLeft, ChevronRight, Calendar, Settings, Trash2, KeyRound, Database,
   Wallet, DollarSign, Award, CalendarClock, Edit3, ShieldCheck, Sparkles,
-  BarChart2, ClipboardPaste, Copy, FileText
+  BarChart2, ClipboardPaste, Copy, FileText, Pencil
 } from 'lucide-react';
 
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, doc, collection, onSnapshot, addDoc, setDoc, deleteDoc } from 'firebase/firestore';
+import { getFirestore, doc, collection, onSnapshot, addDoc, setDoc, deleteDoc, updateDoc, writeBatch } from 'firebase/firestore';
 
 const projectFirebaseConfig = {
   apiKey: "AIzaSyD1ULw8t4rIbyOjcGdjXPWt560Vb0fS5-M",
@@ -1257,7 +1257,7 @@ const MainChartsRow = () => {
 };
 
 const BottomRow = () => {
-  const { rawData, onDeleteTrade } = React.useContext(DashboardContext);
+  const { rawData, chartData, onDeleteTrade, selectedAccount } = React.useContext(DashboardContext);
 
   const [currentDate, setCurrentDate] = useState(() => {
     if (rawData && rawData.length > 0) {
@@ -1283,6 +1283,46 @@ const BottomRow = () => {
   const monthName = currentDate.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
   const capitalizedMonth = monthName.charAt(0).toUpperCase() + monthName.slice(1);
 
+  // Group rawData by date so consolidated view sums all accounts on that day
+  const tradeMap = useMemo(() => {
+    const map = new Map();
+    const sourceData = rawData && rawData.length > 0 ? rawData : defaultDailyPnLData;
+
+    sourceData.forEach(item => {
+      const dateKey = item.date;
+      const pnl = Number(item.netPnl !== undefined ? item.netPnl : item.pnl) || 0;
+      const trades = parseInt(item.totalTrades !== undefined ? item.totalTrades : item.trades, 10) || 0;
+      const winRate = Number(item.winRate || 0);
+      const winTrades = trades * (winRate / 100);
+
+      if (!map.has(dateKey)) {
+        map.set(dateKey, {
+          id: item.id,
+          ids: item.id ? [item.id] : [],
+          date: dateKey,
+          netPnl: pnl,
+          totalTrades: trades,
+          winTrades: winTrades,
+          accountsCount: 1
+        });
+      } else {
+        const prev = map.get(dateKey);
+        prev.netPnl += pnl;
+        prev.totalTrades += trades;
+        prev.winTrades += winTrades;
+        if (item.id) prev.ids.push(item.id);
+        prev.accountsCount += 1;
+      }
+    });
+
+    // Compute blended win rate
+    map.forEach(val => {
+      val.winRate = val.totalTrades > 0 ? Math.round((val.winTrades / val.totalTrades) * 100) : 0;
+    });
+
+    return map;
+  }, [rawData]);
+
   const calendarData = useMemo(() => {
     const firstDay = new Date(year, month, 1);
     const lastDay = new Date(year, month + 1, 0);
@@ -1290,11 +1330,6 @@ const BottomRow = () => {
 
     let startDayIndex = firstDay.getDay() - 1;
     if (startDayIndex === -1) startDayIndex = 6;
-
-    const tradeMap = new Map();
-    (rawData && rawData.length > 0 ? rawData : defaultDailyPnLData).forEach(trade => {
-      tradeMap.set(trade.date, trade);
-    });
 
     const weeks = [];
     let currentWeek = [];
@@ -1314,8 +1349,8 @@ const BottomRow = () => {
       });
 
       if (currentWeek.length === 7) {
-        const weekPnl = currentWeek.reduce((acc, cell) => acc + (cell?.data?.netPnl !== undefined ? cell.data.netPnl : cell?.data?.pnl || 0), 0);
-        const weekTrades = currentWeek.reduce((acc, cell) => acc + (cell?.data?.totalTrades !== undefined ? cell.data.totalTrades : cell?.data?.trades || 0), 0);
+        const weekPnl = currentWeek.reduce((acc, cell) => acc + (cell?.data?.netPnl || 0), 0);
+        const weekTrades = currentWeek.reduce((acc, cell) => acc + (cell?.data?.totalTrades || 0), 0);
         weeks.push({ days: currentWeek, totalPnl: weekPnl, totalTrades: weekTrades });
         currentWeek = [];
       }
@@ -1325,46 +1360,93 @@ const BottomRow = () => {
       while (currentWeek.length < 7) {
         currentWeek.push(null);
       }
-      const weekPnl = currentWeek.reduce((acc, cell) => acc + (cell?.data?.netPnl !== undefined ? cell.data.netPnl : cell?.data?.pnl || 0), 0);
-      const weekTrades = currentWeek.reduce((acc, cell) => acc + (cell?.data?.totalTrades !== undefined ? cell.data.totalTrades : cell?.data?.trades || 0), 0);
+      const weekPnl = currentWeek.reduce((acc, cell) => acc + (cell?.data?.netPnl || 0), 0);
+      const weekTrades = currentWeek.reduce((acc, cell) => acc + (cell?.data?.totalTrades || 0), 0);
       weeks.push({ days: currentWeek, totalPnl: weekPnl, totalTrades: weekTrades });
     }
 
     return weeks;
-  }, [year, month, rawData]);
+  }, [year, month, tradeMap]);
+
+  // Monthly accumulator calculation for the visible month
+  const monthAccumulator = useMemo(() => {
+    let totalPnl = 0;
+    let totalTrades = 0;
+    let daysOperated = 0;
+
+    const prefix = `${year}-${String(month + 1).padStart(2, '0')}`;
+    tradeMap.forEach((val, dateStr) => {
+      if (dateStr.startsWith(prefix)) {
+        totalPnl += val.netPnl;
+        totalTrades += val.totalTrades;
+        if (val.totalTrades > 0 || val.netPnl !== 0) {
+          daysOperated++;
+        }
+      }
+    });
+
+    const avgDaily = daysOperated > 0 ? (totalPnl / daysOperated) : 0;
+
+    return {
+      totalPnl,
+      totalTrades,
+      daysOperated,
+      avgDaily
+    };
+  }, [year, month, tradeMap]);
 
   const overtradingScatterData = useMemo(() => {
-    const list = rawData && rawData.length > 0 ? rawData : defaultDailyPnLData;
-    return list.map(item => {
-      const pnl = item.netPnl !== undefined ? item.netPnl : item.pnl;
-      const trades = item.totalTrades !== undefined ? item.totalTrades : item.trades;
-      return {
-        trades: trades || 0,
-        pnl: pnl || 0,
-        isWin: pnl >= 0
-      };
-    });
-  }, [rawData]);
+    const list = Array.from(tradeMap.values());
+    return list.map(item => ({
+      trades: item.totalTrades || 0,
+      pnl: item.netPnl || 0,
+      isWin: item.netPnl >= 0
+    }));
+  }, [tradeMap]);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
       <Card className="lg:col-span-2 overflow-x-auto">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 pb-3 border-b border-slate-100">
           <div>
-            <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Trading Calendar</h3>
-            <p className="text-xs text-gray-400 mt-0.5">Desempeño mensual exacto</p>
+            <div className="flex items-center gap-2">
+              <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Trading Calendar</h3>
+              {selectedAccount === 'all' && (
+                <span className="px-2 py-0.5 bg-blue-50 text-blue-700 font-bold text-[10px] rounded-full border border-blue-200">
+                  Consolidado Activo
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-gray-400 mt-0.5">Desempeño mensual exacto por sesión</p>
           </div>
-          
-          <div className="flex items-center gap-2">
-            <button onClick={prevMonth} className="p-1.5 hover:bg-gray-100 rounded-lg text-gray-500 transition-colors">
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <span className="text-xs font-bold text-gray-700 min-w-[120px] text-center">
-              {capitalizedMonth}
-            </span>
-            <button onClick={nextMonth} className="p-1.5 hover:bg-gray-100 rounded-lg text-gray-500 transition-colors">
-              <ChevronRight className="w-4 h-4" />
-            </button>
+
+          {/* Month Accumulator Badge & Navigation */}
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-3 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 shadow-2xs">
+              <div className="flex flex-col text-right">
+                <span className="text-[10px] uppercase font-bold text-slate-400">Acumulado {capitalizedMonth}</span>
+                <span className={`text-sm font-black ${monthAccumulator.totalPnl >= 0 ? 'text-emerald-600' : 'text-coral-500'}`}>
+                  {monthAccumulator.totalPnl >= 0 ? `+$${monthAccumulator.totalPnl.toLocaleString(undefined, {minimumFractionDigits: 1})}` : `-$${Math.abs(monthAccumulator.totalPnl).toLocaleString(undefined, {minimumFractionDigits: 1})}`}
+                </span>
+              </div>
+              <div className="h-6 w-px bg-slate-200" />
+              <div className="text-[11px] text-slate-500 font-medium leading-tight">
+                <div><strong>{monthAccumulator.daysOperated}</strong> días op.</div>
+                <div>{monthAccumulator.totalTrades} trades</div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-0.5">
+              <button onClick={prevMonth} className="p-1 hover:bg-gray-100 rounded text-gray-500 transition-colors">
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <span className="text-xs font-bold text-gray-700 min-w-[110px] text-center">
+                {capitalizedMonth}
+              </span>
+              <button onClick={nextMonth} className="p-1 hover:bg-gray-100 rounded text-gray-500 transition-colors">
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1384,10 +1466,11 @@ const BottomRow = () => {
                     return <div key={`empty-${wIdx}-${dIdx}`} className="h-16 bg-slate-50/50 rounded-lg border border-slate-100/60" />;
                   }
 
-                  const pnl = cell.data ? (cell.data.netPnl !== undefined ? cell.data.netPnl : cell.data.pnl) : null;
-                  const trades = cell.data ? (cell.data.totalTrades !== undefined ? cell.data.totalTrades : cell.data.trades) : null;
+                  const pnl = cell.data ? cell.data.netPnl : null;
+                  const trades = cell.data ? cell.data.totalTrades : null;
                   const winRate = cell.data?.winRate;
                   const isPositive = pnl !== null && pnl >= 0;
+                  const accountsCount = cell.data?.accountsCount || 0;
 
                   return (
                     <div 
@@ -1401,11 +1484,25 @@ const BottomRow = () => {
                       }`}
                     >
                       <div className="flex justify-between items-start">
-                        <span className="text-[11px] font-bold text-slate-700">{cell.day}</span>
+                        <div className="flex items-center gap-1">
+                          <span className="text-[11px] font-bold text-slate-700">{cell.day}</span>
+                          {accountsCount > 1 && (
+                            <span className="text-[9px] px-1 bg-blue-100 text-blue-700 font-bold rounded" title={`${accountsCount} cuentas sumadas`}>
+                              x{accountsCount}
+                            </span>
+                          )}
+                        </div>
+
                         {cell.data && cell.data.id && onDeleteTrade && (
                           <button
-                            onClick={() => onDeleteTrade(cell.data.id)}
-                            title="Eliminar registro"
+                            onClick={() => {
+                              if (cell.data.ids && cell.data.ids.length > 0) {
+                                cell.data.ids.forEach(id => onDeleteTrade(id));
+                              } else {
+                                onDeleteTrade(cell.data.id);
+                              }
+                            }}
+                            title="Eliminar registro de este día"
                             className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-coral-500 transition-opacity p-0.5"
                           >
                             <Trash2 className="w-3 h-3" />
@@ -1419,7 +1516,7 @@ const BottomRow = () => {
                       </div>
 
                       {cell.data && (
-                        <div className="flex justify-between text-[9px] text-slate-500">
+                        <div className="flex justify-between text-[9px] text-slate-500 font-medium">
                           <span>{trades} Trd</span>
                           {winRate !== undefined && <span>{winRate}% W</span>}
                         </div>
@@ -1433,7 +1530,7 @@ const BottomRow = () => {
                 }`}>
                   <span className="text-[9px] font-bold text-slate-400 uppercase">P&L Neto</span>
                   <span className={`text-xs font-black ${week.totalPnl >= 0 ? 'text-emerald-600' : 'text-coral-500'}`}>
-                    {week.totalPnl >= 0 ? `+$${week.totalPnl}` : `-$${Math.abs(week.totalPnl)}`}
+                    {week.totalPnl >= 0 ? `+$${week.totalPnl.toFixed(1)}` : `-$${Math.abs(week.totalPnl).toFixed(1)}`}
                   </span>
                   <span className="text-[9px] text-slate-500 font-medium">{week.totalTrades} trd</span>
                 </div>
@@ -1501,6 +1598,102 @@ const BottomRow = () => {
   );
 };
 
+const RenameAccountModal = ({ isOpen, onClose, currentAccount, onRename }) => {
+  const [newName, setNewName] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    if (isOpen) {
+      setNewName(currentAccount === 'all' ? '' : currentAccount);
+      setErr('');
+    }
+  }, [isOpen, currentAccount]);
+
+  if (!isOpen) return null;
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const trimmed = newName.trim();
+    if (!trimmed) {
+      setErr('El nombre no puede estar vacío');
+      return;
+    }
+    if (trimmed === currentAccount) {
+      onClose();
+      return;
+    }
+    setSaving(true);
+    setErr('');
+    try {
+      await onRename(currentAccount, trimmed);
+      onClose();
+    } catch (e) {
+      console.error(e);
+      setErr('Error al renombrar la cuenta');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden p-5 space-y-3">
+        <div className="flex justify-between items-center border-b pb-2">
+          <h3 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+            <Pencil className="w-4 h-4 text-blue-600" /> Renombrar Cuenta
+          </h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-3 text-xs">
+          <div>
+            <span className="text-slate-500 text-[11px] block mb-1">Nombre actual:</span>
+            <div className="font-semibold text-slate-800 p-2 bg-slate-100 rounded-lg">
+              {currentAccount}
+            </div>
+          </div>
+
+          <div>
+            <label className="font-semibold text-slate-700 block mb-1">Nuevo nombre:</label>
+            <input
+              type="text"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="Ej: Apex 50k #1, Topstep Funded..."
+              className="w-full p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+              autoFocus
+              required
+            />
+          </div>
+
+          {err && <div className="text-red-600 text-[11px]">{err}</div>}
+
+          <div className="p-2.5 bg-blue-50 text-blue-800 rounded-lg text-[11px] leading-relaxed">
+            💡 Todos los trades ya registrados bajo <strong>"{currentAccount}"</strong> se actualizarán con el nuevo nombre sin perder ningún dato.
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2 border-t">
+            <button type="button" onClick={onClose} className="px-3 py-1.5 text-gray-500 hover:text-gray-700">
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold shadow-xs disabled:opacity-50 flex items-center gap-1.5"
+            >
+              {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              Guardar Nombre
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
 const App = () => {
   const [user, setUser] = useState(null);
   const [realTrades, setRealTrades] = useState([]);
@@ -1508,6 +1701,7 @@ const App = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isAccountConfigOpen, setIsAccountConfigOpen] = useState(false);
+  const [isRenameOpen, setIsRenameOpen] = useState(false);
   const [dateFilter, setDateFilter] = useState('all');
   const [selectedAccount, setSelectedAccount] = useState('all');
   const [authErrorMsg, setAuthErrorMsg] = useState(null);
@@ -1557,7 +1751,7 @@ const App = () => {
     if (!user) return;
     const collectionRef = collection(db, 'artifacts', appId, 'users', user.uid, 'trading_days');
     const unsubscribe = onSnapshot(collectionRef, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const data = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
       data.sort((a, b) => a.date.localeCompare(b.date));
       setRealTrades(data);
     }, (error) => console.error("Firestore error:", error));
@@ -1567,12 +1761,44 @@ const App = () => {
 
   const handleSaveAccountMeta = async (newMeta) => {
     if (!user) return;
-    const accountKey = selectedAccount === 'all' ? 'Cuenta Principal' : selectedAccount;
+    const accountKey = selectedAccount === 'all' ? (existingAccounts[0] || 'Cuenta Principal') : selectedAccount;
     try {
       const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'accounts_meta', accountKey);
       await setDoc(docRef, { ...newMeta, updatedAt: new Date().toISOString() }, { merge: true });
     } catch (err) {
       console.error("Error saving account meta:", err);
+    }
+  };
+
+  const handleRenameAccount = async (oldName, newName) => {
+    if (!user || !oldName || !newName || oldName === newName) return;
+    try {
+      // 1. Batch update all trades from oldName to newName
+      const tradesToUpdate = realTrades.filter(t => (t.account || 'Cuenta Principal') === oldName);
+      if (tradesToUpdate.length > 0) {
+        const batch = writeBatch(db);
+        tradesToUpdate.forEach(t => {
+          const tRef = doc(db, 'artifacts', appId, 'users', user.uid, 'trading_days', t.id);
+          batch.update(tRef, { account: newName });
+        });
+        await batch.commit();
+      }
+
+      // 2. Transfer account metadata if exists
+      if (accountsMeta[oldName]) {
+        const oldMetaRef = doc(db, 'artifacts', appId, 'users', user.uid, 'accounts_meta', oldName);
+        const newMetaRef = doc(db, 'artifacts', appId, 'users', user.uid, 'accounts_meta', newName);
+        await setDoc(newMetaRef, { ...accountsMeta[oldName], updatedAt: new Date().toISOString() });
+        await deleteDoc(oldMetaRef);
+      }
+
+      // 3. Update current active selection if it was the renamed account
+      if (selectedAccount === oldName) {
+        setSelectedAccount(newName);
+      }
+    } catch (err) {
+      console.error("Error renaming account in Firebase:", err);
+      throw err;
     }
   };
 
@@ -1673,12 +1899,12 @@ const App = () => {
     return monthName.charAt(0).toUpperCase() + monthName.slice(1);
   };
 
-  const activeAccountKey = selectedAccount === 'all' ? 'Cuenta Principal' : selectedAccount;
+  const activeAccountKey = selectedAccount === 'all' ? (existingAccounts[0] || 'Cuenta Principal') : selectedAccount;
   const currentAccountMeta = accountsMeta[activeAccountKey] || {
     type: 'eval',
     targetProfit: 3000,
-    purchaseDate: '2026-09-01',
-    expirationDate: '2026-09-30',
+    purchaseDate: '2026-08-17',
+    expirationDate: '2026-09-17',
     initialBalance: 50000
   };
 
@@ -1709,10 +1935,11 @@ const App = () => {
             </div>
             
             <div className="flex flex-wrap items-center gap-3">
-              <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
-                <Wallet className="w-4 h-4 text-blue-500" />
+              {/* Account Selector + Rename Button */}
+              <div className="flex items-center gap-1.5 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 shadow-sm">
+                <Wallet className="w-4 h-4 text-blue-500 shrink-0" />
                 <select
-                  className="bg-transparent border-none text-xs font-semibold text-gray-700 focus:outline-none cursor-pointer"
+                  className="bg-transparent border-none text-xs font-semibold text-gray-700 focus:outline-none cursor-pointer pr-1"
                   value={selectedAccount}
                   onChange={(e) => setSelectedAccount(e.target.value)}
                 >
@@ -1721,6 +1948,30 @@ const App = () => {
                     <option key={acc} value={acc}>{acc}</option>
                   ))}
                 </select>
+
+                {selectedAccount !== 'all' && (
+                  <button
+                    type="button"
+                    onClick={() => setIsRenameOpen(true)}
+                    title={`Cambiar el nombre de "${selectedAccount}"`}
+                    className="p-1 text-slate-400 hover:text-blue-600 hover:bg-slate-100 rounded transition-colors"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                {selectedAccount === 'all' && existingAccounts.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedAccount(existingAccounts[0]);
+                      setIsRenameOpen(true);
+                    }}
+                    title={`Renombrar "${existingAccounts[0]}"`}
+                    className="p-1 text-slate-400 hover:text-blue-600 hover:bg-slate-100 rounded transition-colors"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
 
               {realTrades.length > 0 && (
@@ -1806,8 +2057,17 @@ const App = () => {
         initialMeta={currentAccountMeta}
         onSave={handleSaveAccountMeta}
       />
+
+      <RenameAccountModal
+        isOpen={isRenameOpen}
+        onClose={() => setIsRenameOpen(false)}
+        currentAccount={selectedAccount === 'all' ? (existingAccounts[0] || 'Cuenta Principal') : selectedAccount}
+        onRename={handleRenameAccount}
+      />
     </DashboardContext.Provider>
   );
 };
+
+export default App;
 
 export default App;
