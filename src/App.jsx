@@ -14,6 +14,17 @@ import {
 
 import { auth, db, appId } from './services/firebaseConfig';
 
+// Nuevos imports de la arquitectura modular
+import { 
+  calculateTradingStats, 
+  calculateEconomicStats, 
+  aggregateDailyTradingData, 
+  normalizeTradingRecord 
+} from './utils/metrics';
+
+import EconomicPerformance from './components/EconomicPerformance';
+// import { transitionToFunded, resetAccountCycle } from './services/dbServices'; // (Descomenta esto cuando vayas a usar estas funciones en tus botones/modales)
+
 const DashboardContext = React.createContext({});
 
 const themeColors = {
