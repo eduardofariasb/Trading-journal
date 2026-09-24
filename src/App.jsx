@@ -9,10 +9,10 @@ import {
   CalendarDays, Upload, X, Image as ImageIcon, Loader2, CheckCircle2,
   ChevronLeft, ChevronRight, Calendar, Settings, Trash2, KeyRound, Database,
   Wallet, DollarSign, Award, CalendarClock, Edit3, ShieldCheck, Sparkles,
-  BarChart2, ClipboardPaste, Copy, FileText, AlertTriangle
+  BarChart2, ClipboardPaste, Copy, FileText, AlertTriangle, PlusCircle
 } from 'lucide-react';
-import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, doc, collection, onSnapshot, setDoc, deleteDoc, writeBatch, query, where, getDocs, orderBy } from 'firebase/firestore';
+import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { doc, collection, onSnapshot, setDoc, deleteDoc, writeBatch, query, where, getDocs, addDoc, serverTimestamp } from 'firebase/firestore';
 
 import { auth, db, appId } from './services/firebaseConfig';
 import { 
@@ -23,8 +23,6 @@ import {
 } from './utils/metrics';
 import EconomicPerformance from './components/EconomicPerformance';
 
-const DashboardContext = React.createContext({});
-
 const themeColors = {
   emerald: '#10B981',
   coral: '#EF4444',
@@ -32,42 +30,63 @@ const themeColors = {
   lightGray: '#F3F4F6'
 };
 
-const demoTrades = [
-  { id: '1', date: '2026-08-17', netPnl: -235, totalTrades: 3, winRate: 0, account: 'Cuenta Principal', avgWin: 0, avgLoss: -235 },
-  { id: '2', date: '2026-08-18', netPnl: -434, totalTrades: 11, winRate: 36, account: 'Cuenta Principal', avgWin: 120, avgLoss: -75 },
-  { id: '3', date: '2026-08-19', netPnl: 306.5, totalTrades: 30, winRate: 46.67, account: 'Cuenta Principal', avgWin: 80, avgLoss: -60 },
-  { id: '4', date: '2026-08-20', netPnl: -923, totalTrades: 24, winRate: 37.5, account: 'Cuenta Principal', avgWin: 150, avgLoss: -110 },
-  { id: '5', date: '2026-08-21', netPnl: 311, totalTrades: 1, winRate: 100, account: 'Cuenta Principal', avgWin: 311, avgLoss: 0 },
-  { id: '6', date: '2026-08-24', netPnl: 0, totalTrades: 5, winRate: 40, account: 'Cuenta Principal', avgWin: 100, avgLoss: -100 },
-  { id: '7', date: '2026-08-25', netPnl: -197.5, totalTrades: 8, winRate: 25, account: 'Cuenta Principal', avgWin: 100, avgLoss: -80 },
-  { id: '8', date: '2026-08-26', netPnl: 583, totalTrades: 2, winRate: 100, account: 'Cuenta Principal', avgWin: 291.5, avgLoss: 0 },
-  { id: '9', date: '2026-08-27', netPnl: 374.5, totalTrades: 1, winRate: 100, account: 'Cuenta Principal', avgWin: 374.5, avgLoss: 0 },
-  { id: '10', date: '2026-08-28', netPnl: -164, totalTrades: 3, winRate: 33.33, account: 'Cuenta Principal', avgWin: 80, avgLoss: -122 },
-  { id: '11', date: '2026-08-31', netPnl: 608, totalTrades: 1, winRate: 100, account: 'Cuenta Principal', avgWin: 608, avgLoss: 0 },
-  { id: '0', date: '2026-07-31', netPnl: 2800, totalTrades: 10, winRate: 60, account: 'Cuenta Principal', avgWin: 450, avgLoss: -150 }
-];
+const radarMetricsList = ['Disciplina', 'Entrada', 'Salida', 'Gestión Riesgo', 'Paciencia'];
 
-const demoAccountsMeta = {
-  'Cuenta Principal': {
-    type: 'funded',
-    targetProfit: 3000,
-    purchaseDate: '2026-07-01',
-    expirationDate: '2026-11-24',
-    initialBalance: 50000,
-    accountCost: 150, 
-    totalPayouts: 1500 
+// Parser para entradas de texto pegadas (TradingView, NinjaTrader o JSON)
+const parsePastedTradingData = (text) => {
+  if (!text || typeof text !== 'string') return null;
+
+  try {
+    const jsonMatch = text.match(/\{[\s\S]*?\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (parsed && typeof parsed === 'object') {
+        const todayStr = new Date().toISOString().split('T')[0];
+        return {
+          date: parsed.date || todayStr,
+          netPnl: Number(parsed.netPnl ?? parsed.pnl ?? parsed.net_pnl ?? 0),
+          totalTrades: parseInt(parsed.totalTrades ?? parsed.trades ?? parsed.total_trades ?? 0, 10),
+          winRate: Number(parsed.winRate ?? parsed.win_rate ?? parsed.winrate ?? 0),
+          avgWin: Number(parsed.avgWin ?? parsed.avg_win ?? 0),
+          avgLoss: Number(parsed.avgLoss ?? parsed.avg_loss ?? 0)
+        };
+      }
+    }
+  } catch {}
+
+  const extractNum = (regex) => {
+    const m = text.match(regex);
+    if (!m) return null;
+    const clean = m[1].replace(/\$/g, '').replace(/,/g, '').trim();
+    const val = parseFloat(clean);
+    return isNaN(val) ? null : val;
+  };
+
+  const todayStr = new Date().toISOString().split('T')[0];
+  const dateMatch = text.match(/(\d{4}-\d{2}-\d{2})/) || text.match(/(\d{2}\/\d{2}\/\d{4})/);
+  let extractedDate = todayStr;
+  if (dateMatch) {
+    if (dateMatch[1].includes('/')) {
+      const [d, m, y] = dateMatch[1].split('/');
+      extractedDate = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+    } else {
+      extractedDate = dateMatch[1];
+    }
   }
+
+  return {
+    date: extractedDate,
+    netPnl: extractNum(/(?:net\s*pnl|pnl\s*neto|resultado|profit|net\s*profit|ganancia\s*neta)[\s:=]+([+-]?\$?[\d,.-]+)/i) ?? 0,
+    totalTrades: Math.round(extractNum(/(?:total\s*trades|trades|operaciones|total\s*operaciones)[\s:=]+(\d+)/i) ?? 0),
+    winRate: extractNum(/(?:win\s*rate|tasa\s*de\s*acierto|winning\s*%|efectividad)[\s:=]+([\d,.-]+)/i) ?? 0,
+    avgWin: extractNum(/(?:avg\s*win|ganancia\s*promedio|average\s*win)[\s:=]+([+-]?\$?[\d,.-]+)/i) ?? 0,
+    avgLoss: extractNum(/(?:avg\s*loss|p[eé]rdida\s*promedio|average\s*loss)[\s:=]+([+-]?\$?[\d,.-]+)/i) ?? 0
+  };
 };
 
-const radarData = [
-  { subject: 'Disciplina', score: 85, fullMark: 100 },
-  { subject: 'Entrada', score: 70, fullMark: 100 },
-  { subject: 'Salida', score: 92, fullMark: 100 },
-  { subject: 'Gestión Riesgo', score: 95, fullMark: 100 },
-  { subject: 'Paciencia', score: 78, fullMark: 100 },
-];
-
-const AccountConfigModal = ({ isOpen, onClose, accountName, initialMeta, onSave, onRename, onDelete, onReset }) => {
+// Modal de Configuración y Gestión de Cuentas
+const AccountConfigModal = ({ isOpen, onClose, currentAccount, onSave, onRename, onDelete, onReset }) => {
+  const [name, setName] = useState('');
   const [type, setType] = useState('eval');
   const [targetProfit, setTargetProfit] = useState(3000);
   const [purchaseDate, setPurchaseDate] = useState('2026-09-01');
@@ -75,27 +94,32 @@ const AccountConfigModal = ({ isOpen, onClose, accountName, initialMeta, onSave,
   const [initialBalance, setInitialBalance] = useState(50000);
   const [accountCost, setAccountCost] = useState(0);
   const [totalPayouts, setTotalPayouts] = useState(0);
-  const [newName, setNewName] = useState('');
-  const [confirmAction, setConfirmAction] = useState(null); 
+  const [confirmAction, setConfirmAction] = useState(null);
 
   useEffect(() => {
-    if (initialMeta) {
-      setType(initialMeta.type || 'eval');
-      setTargetProfit(initialMeta.targetProfit || 3000);
-      setPurchaseDate(initialMeta.purchaseDate || '2026-09-01');
-      setExpirationDate(initialMeta.expirationDate || '2026-09-30');
-      setInitialBalance(initialMeta.initialBalance || 50000);
-      setAccountCost(initialMeta.accountCost || 0);
-      setTotalPayouts(initialMeta.totalPayouts || 0);
-      setNewName(accountName === 'all' ? '' : accountName);
+    if (currentAccount) {
+      setName(currentAccount.name || '');
+      setType(currentAccount.type || 'eval');
+      setTargetProfit(currentAccount.targetProfit || 3000);
+      setPurchaseDate(currentAccount.purchaseDate || new Date().toISOString().split('T')[0]);
+      setExpirationDate(currentAccount.expirationDate || new Date().toISOString().split('T')[0]);
+      setInitialBalance(currentAccount.initialBalance || 50000);
+      setAccountCost(currentAccount.accountCost || 0);
+      setTotalPayouts(currentAccount.totalPayouts || 0);
     }
-  }, [initialMeta, accountName, isOpen]);
+  }, [currentAccount, isOpen]);
 
-  if (!isOpen) return null;
+  if (!isOpen || !currentAccount) return null;
+
+  const isAll = currentAccount.accountId === 'all';
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    onSave({ 
+    if (!isAll && name.trim() && name !== currentAccount.name) {
+      onRename(currentAccount.accountId, name.trim());
+    }
+    onSave(currentAccount.accountId, { 
+      name: isAll ? 'Consolidado General' : name.trim(),
       type, 
       targetProfit: Number(targetProfit) || 0, 
       purchaseDate, 
@@ -104,16 +128,12 @@ const AccountConfigModal = ({ isOpen, onClose, accountName, initialMeta, onSave,
       accountCost: Number(accountCost) || 0, 
       totalPayouts: Number(totalPayouts) || 0 
     });
-    
-    if (newName && newName !== accountName && accountName !== 'all') {
-      onRename(accountName, newName);
-    }
     onClose();
   };
 
   const executeConfirm = () => {
-    if (confirmAction === 'reset') onReset(accountName);
-    if (confirmAction === 'delete') onDelete(accountName);
+    if (confirmAction === 'reset') onReset(currentAccount.accountId);
+    if (confirmAction === 'delete') onDelete(currentAccount.accountId);
     setConfirmAction(null);
     onClose();
   };
@@ -128,12 +148,16 @@ const AccountConfigModal = ({ isOpen, onClose, accountName, initialMeta, onSave,
           <h3 className="text-xl font-bold text-slate-800">¿Estás seguro?</h3>
           <p className="text-sm text-slate-500 leading-relaxed">
             {confirmAction === 'reset' 
-              ? `Esto borrará todo el historial de trades de la cuenta "${accountName}". Sus fechas y metadatos se mantendrán, pero el balance empezará desde cero.`
-              : `Esto eliminará permanentemente la cuenta "${accountName}". Esta acción no se puede deshacer.`}
+              ? `Esto archivará el ciclo operativo actual de "${currentAccount.name}". Las métricas iniciarán desde cero conservando el historial.`
+              : `Esto eliminará permanentemente la cuenta "${currentAccount.name}" y todas sus operaciones.`}
           </p>
           <div className="flex gap-3 pt-4 mt-2 border-t border-slate-100">
-            <button onClick={() => setConfirmAction(null)} className="flex-1 py-2.5 rounded-xl font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200">Cancelar</button>
-            <button onClick={executeConfirm} className="flex-1 py-2.5 rounded-xl font-semibold bg-red-600 text-white hover:bg-red-700">Sí, continuar</button>
+            <button type="button" onClick={() => setConfirmAction(null)} className="flex-1 py-2.5 rounded-xl font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200">
+              Cancelar
+            </button>
+            <button type="button" onClick={executeConfirm} className="flex-1 py-2.5 rounded-xl font-semibold bg-red-600 text-white hover:bg-red-700">
+              Confirmar
+            </button>
           </div>
         </div>
       </div>
@@ -145,43 +169,295 @@ const AccountConfigModal = ({ isOpen, onClose, accountName, initialMeta, onSave,
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden p-6 space-y-4">
         <div className="flex justify-between items-center border-b pb-3">
           <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
-            <Edit3 className="w-5 h-5 text-emerald-600" /> Configurar: <span className="text-emerald-600">{accountName === 'all' ? 'General' : accountName}</span>
+            <Edit3 className="w-5 h-5 text-emerald-600" /> 
+            Configuración de Cuenta
           </h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4 text-xs">
-          <div className="grid grid-cols-2 gap-2">
-            <button type="button" onClick={() => setType('eval')} className={`py-2 px-3 rounded-lg font-bold border transition-all ${type === 'eval' ? 'bg-blue-50 border-blue-500 text-blue-700 shadow-2xs' : 'bg-white border-gray-200 text-slate-500'}`}>🎯 Evaluación</button>
-            <button type="button" onClick={() => setType('funded')} className={`py-2 px-3 rounded-lg font-bold border transition-all ${type === 'funded' ? 'bg-emerald-50 border-emerald-500 text-emerald-700 shadow-2xs' : 'bg-white border-gray-200 text-slate-500'}`}>🏆 Fondeada</button>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div><label className="font-semibold block mb-1">Fecha de Compra</label><input type="date" value={purchaseDate} onChange={(e) => setPurchaseDate(e.target.value)} className="w-full p-2 border rounded-lg" required /></div>
-            <div><label className="font-semibold block mb-1">Vencimiento</label><input type="date" value={expirationDate} onChange={(e) => setExpirationDate(e.target.value)} className="w-full p-2 border rounded-lg" required /></div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div><label className="font-semibold block mb-1">Profit Target ($)</label><input type="number" value={targetProfit} onChange={(e) => setTargetProfit(e.target.value)} className="w-full p-2 border rounded-lg" required /></div>
-            <div><label className="font-semibold block mb-1">Balance Inicial ($)</label><input type="number" value={initialBalance} onChange={(e) => setInitialBalance(e.target.value)} className="w-full p-2 border rounded-lg" /></div>
-          </div>
-          <div className="grid grid-cols-2 gap-3 pt-3 border-t">
-            <div><label className="font-semibold block mb-1">Costo / Reset ($)</label><input type="number" value={accountCost} onChange={(e) => setAccountCost(e.target.value)} className="w-full p-2 border rounded-lg text-red-600 font-semibold" /></div>
-            <div><label className="font-semibold block mb-1">Retiros / Payouts ($)</label><input type="number" value={totalPayouts} onChange={(e) => setTotalPayouts(e.target.value)} className="w-full p-2 border rounded-lg text-emerald-600 font-semibold" /></div>
-          </div>
-          {accountName !== 'all' && (
-            <div className="pt-4 mt-4 border-t border-slate-100 space-y-3">
-              <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Gestión Avanzada</h3>
-              <div>
-                <label className="font-semibold block mb-1">Renombrar Cuenta</label>
-                <input type="text" value={newName} onChange={(e) => setNewName(e.target.value)} className="w-full p-2 border rounded-lg" placeholder="Nuevo nombre..." />
-              </div>
-              <div className="flex gap-2">
-                <button type="button" onClick={() => setConfirmAction('reset')} className="flex-1 py-2 bg-amber-50 text-amber-700 border font-semibold rounded-lg hover:bg-amber-100">Limpiar Historial</button>
-                <button type="button" onClick={() => setConfirmAction('delete')} className="flex-1 py-2 bg-red-50 text-red-700 border font-semibold rounded-lg hover:bg-red-100">Eliminar Cuenta</button>
-              </div>
+          {!isAll && (
+            <div>
+              <label className="font-semibold block mb-1">Nombre de la Cuenta</label>
+              <input 
+                type="text" 
+                value={name} 
+                onChange={(e) => setName(e.target.value)} 
+                className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" 
+                required 
+              />
             </div>
           )}
-          <div className="flex justify-end gap-2 pt-2 border-t">
+
+          <div className="grid grid-cols-2 gap-2">
+            <button 
+              type="button" 
+              onClick={() => setType('eval')} 
+              className={`py-2 px-3 rounded-lg font-bold border transition-all ${type === 'eval' ? 'bg-blue-50 border-blue-500 text-blue-700' : 'bg-white border-gray-200 text-slate-500'}`}
+            >
+              🎯 Evaluación
+            </button>
+            <button 
+              type="button" 
+              onClick={() => setType('funded')} 
+              className={`py-2 px-3 rounded-lg font-bold border transition-all ${type === 'funded' ? 'bg-emerald-50 border-emerald-500 text-emerald-700' : 'bg-white border-gray-200 text-slate-500'}`}
+            >
+              🏆 Fondeada
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="font-semibold block mb-1">Fecha de Compra</label>
+              <input type="date" value={purchaseDate} onChange={(e) => setPurchaseDate(e.target.value)} className="w-full p-2 border rounded-lg" required />
+            </div>
+            <div>
+              <label className="font-semibold block mb-1">Vencimiento / Renovación</label>
+              <input type="date" value={expirationDate} onChange={(e) => setExpirationDate(e.target.value)} className="w-full p-2 border rounded-lg" required />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="font-semibold block mb-1">Profit Target ($)</label>
+              <input type="number" value={targetProfit} onChange={(e) => setTargetProfit(e.target.value)} className="w-full p-2 border rounded-lg" required />
+            </div>
+            <div>
+              <label className="font-semibold block mb-1">Balance Inicial ($)</label>
+              <input type="number" value={initialBalance} onChange={(e) => setInitialBalance(e.target.value)} className="w-full p-2 border rounded-lg" />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 pt-3 border-t">
+            <div>
+              <label className="font-semibold block mb-1">Costos / Resets Pagados ($)</label>
+              <input type="number" value={accountCost} onChange={(e) => setAccountCost(e.target.value)} className="w-full p-2 border rounded-lg text-red-600 font-semibold" />
+            </div>
+            <div>
+              <label className="font-semibold block mb-1">Retiros / Payouts Cobrados ($)</label>
+              <input type="number" value={totalPayouts} onChange={(e) => setTotalPayouts(e.target.value)} className="w-full p-2 border rounded-lg text-emerald-600 font-semibold" />
+            </div>
+          </div>
+
+          {!isAll && (
+            <div className="pt-3 border-t border-slate-100 flex gap-2">
+              <button type="button" onClick={() => setConfirmAction('reset')} className="flex-1 py-2 bg-amber-50 text-amber-700 border border-amber-200 font-semibold rounded-lg hover:bg-amber-100">
+                Reiniciar Ciclo
+              </button>
+              <button type="button" onClick={() => setConfirmAction('delete')} className="flex-1 py-2 bg-red-50 text-red-700 border border-red-200 font-semibold rounded-lg hover:bg-red-100">
+                Eliminar Cuenta
+              </button>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-3 border-t">
             <button type="button" onClick={onClose} className="px-4 py-2 text-xs font-semibold text-slate-500">Cancelar</button>
             <button type="submit" className="px-5 py-2 text-xs font-bold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700">Guardar Cambios</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// Modal para Agregar/Editar Operaciones Diarias
+const TradeEntryModal = ({ isOpen, onClose, onSave, accounts, activeAccountId }) => {
+  const [pasteText, setPasteText] = useState('');
+  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [accountId, setAccountId] = useState(activeAccountId !== 'all' ? activeAccountId : (accounts[0]?.accountId || ''));
+  const [netPnl, setNetPnl] = useState('');
+  const [totalTrades, setTotalTrades] = useState('');
+  const [winRate, setWinRate] = useState('');
+  const [avgWin, setAvgWin] = useState('');
+  const [avgLoss, setAvgLoss] = useState('');
+  const [scores, setScores] = useState({
+    Disciplina: 80,
+    Entrada: 80,
+    Salida: 80,
+    'Gestión Riesgo': 80,
+    Paciencia: 80
+  });
+
+  useEffect(() => {
+    if (activeAccountId !== 'all') {
+      setAccountId(activeAccountId);
+    } else if (accounts.length > 0) {
+      setAccountId(accounts[0].accountId);
+    }
+  }, [activeAccountId, accounts, isOpen]);
+
+  if (!isOpen) return null;
+
+  const handleParsePaste = () => {
+    const res = parsePastedTradingData(pasteText);
+    if (res) {
+      setDate(res.date);
+      setNetPnl(res.netPnl);
+      setTotalTrades(res.totalTrades);
+      setWinRate(res.winRate);
+      setAvgWin(res.avgWin);
+      setAvgLoss(res.avgLoss);
+    }
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onSave({
+      date,
+      accountId,
+      netPnl: Number(netPnl) || 0,
+      totalTrades: Number(totalTrades) || 0,
+      winRate: Number(winRate) || 0,
+      avgWin: Number(avgWin) || 0,
+      avgLoss: Number(avgLoss) || 0,
+      tradeScore: scores
+    });
+    // Limpieza
+    setNetPnl('');
+    setTotalTrades('');
+    setWinRate('');
+    setAvgWin('');
+    setAvgLoss('');
+    setPasteText('');
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden p-6 space-y-4">
+        <div className="flex justify-between items-center border-b pb-3">
+          <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
+            <PlusCircle className="w-5 h-5 text-emerald-600" />
+            Registrar Sesión de Trading
+          </h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
+        </div>
+
+        {/* Pegado Rápido */}
+        <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+          <div className="flex justify-between items-center mb-1">
+            <span className="text-[11px] font-bold text-slate-600 flex items-center gap-1">
+              <ClipboardPaste className="w-3.5 h-3.5 text-blue-500" /> Pegar Resumen (JSON o Texto)
+            </span>
+            <button type="button" onClick={handleParsePaste} className="text-[11px] font-bold text-blue-600 hover:underline">
+              Procesar Texto
+            </button>
+          </div>
+          <textarea 
+            rows="2" 
+            value={pasteText} 
+            onChange={(e) => setPasteText(e.target.value)} 
+            placeholder="Pega aquí el resultado diario..." 
+            className="w-full text-xs p-2 bg-white border border-slate-200 rounded-lg outline-none"
+          />
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4 text-xs">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="font-semibold block mb-1">Cuenta</label>
+              <select 
+                value={accountId} 
+                onChange={(e) => setAccountId(e.target.value)} 
+                className="w-full p-2 border rounded-lg outline-none bg-white font-semibold"
+                required
+              >
+                {accounts.map(acc => (
+                  <option key={acc.accountId} value={acc.accountId}>{acc.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="font-semibold block mb-1">Fecha</label>
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full p-2 border rounded-lg" required />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="font-semibold block mb-1">Net P&L ($)</label>
+              <input 
+                type="number" 
+                step="any"
+                value={netPnl} 
+                onChange={(e) => setNetPnl(e.target.value)} 
+                className="w-full p-2 border rounded-lg font-bold" 
+                placeholder="0.00" 
+                required 
+              />
+            </div>
+            <div>
+              <label className="font-semibold block mb-1">Total Trades</label>
+              <input 
+                type="number" 
+                value={totalTrades} 
+                onChange={(e) => setTotalTrades(e.target.value)} 
+                className="w-full p-2 border rounded-lg font-bold" 
+                placeholder="0" 
+                required 
+              />
+            </div>
+            <div>
+              <label className="font-semibold block mb-1">Win Rate (%)</label>
+              <input 
+                type="number" 
+                step="any"
+                value={winRate} 
+                onChange={(e) => setWinRate(e.target.value)} 
+                className="w-full p-2 border rounded-lg font-bold" 
+                placeholder="0-100" 
+                required 
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="font-semibold block mb-1">Avg Win ($)</label>
+              <input 
+                type="number" 
+                step="any"
+                value={avgWin} 
+                onChange={(e) => setAvgWin(e.target.value)} 
+                className="w-full p-2 border rounded-lg text-emerald-600 font-bold" 
+                placeholder="0.00" 
+              />
+            </div>
+            <div>
+              <label className="font-semibold block mb-1">Avg Loss ($)</label>
+              <input 
+                type="number" 
+                step="any"
+                value={avgLoss} 
+                onChange={(e) => setAvgLoss(e.target.value)} 
+                className="w-full p-2 border rounded-lg text-rose-600 font-bold" 
+                placeholder="0.00" 
+              />
+            </div>
+          </div>
+
+          {/* Trade Score Manual */}
+          <div className="border-t border-slate-100 pt-3">
+            <span className="font-bold text-slate-700 block mb-2">Trade Score (0 - 100)</span>
+            <div className="grid grid-cols-5 gap-2">
+              {radarMetricsList.map(item => (
+                <div key={item}>
+                  <label className="text-[10px] text-slate-500 block truncate">{item}</label>
+                  <input 
+                    type="number" 
+                    min="0" 
+                    max="100"
+                    value={scores[item]} 
+                    onChange={(e) => setScores({ ...scores, [item]: Number(e.target.value) || 0 })} 
+                    className="w-full p-1 border rounded text-center text-xs" 
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-3 border-t">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-xs font-semibold text-slate-500">Cancelar</button>
+            <button type="submit" className="px-5 py-2 text-xs font-bold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700">Guardar Sesión</button>
           </div>
         </form>
       </div>
@@ -243,9 +519,9 @@ const getCalendarDaysLeft = (targetDateStr) => {
   return Math.max(0, Math.ceil((targetDate - today) / (1000 * 60 * 60 * 24)));
 };
 
-const PropFirmTracker = ({ activeAccount, accountMeta, netPnl, onEditAccount }) => {
-  const isAll = activeAccount === 'all';
-  const meta = accountMeta || { type: 'eval', targetProfit: 3000, purchaseDate: '2026-09-01', expirationDate: '2026-09-30', initialBalance: 50000, accountCost: 0, totalPayouts: 0 };
+const PropFirmTracker = ({ currentAccount, netPnl, onEditAccount }) => {
+  const isAll = !currentAccount || currentAccount.accountId === 'all';
+  const meta = currentAccount || { type: 'eval', targetProfit: 3000, purchaseDate: '2026-09-01', expirationDate: '2026-09-30', initialBalance: 50000, accountCost: 0, totalPayouts: 0 };
   const isFunded = meta.type === 'funded';
   const target = Number(meta.targetProfit) || 3000;
   const currentPnl = Number(netPnl) || 0;
@@ -267,7 +543,7 @@ const PropFirmTracker = ({ activeAccount, accountMeta, netPnl, onEditAccount }) 
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-base font-bold text-slate-900">{isAll ? "Vista Consolidada" : `Cuenta: ${String(activeAccount)}`}</h2>
+              <h2 className="text-base font-bold text-slate-900">{isAll ? "Vista Consolidada" : `Cuenta: ${meta.name}`}</h2>
               <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold uppercase ${isFunded ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
                 {isFunded ? "🏆 Fondeada" : "🎯 Evaluación"}
               </span>
@@ -276,7 +552,7 @@ const PropFirmTracker = ({ activeAccount, accountMeta, netPnl, onEditAccount }) 
           </div>
         </div>
         <button onClick={onEditAccount} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 transition-colors">
-          <Edit3 className="w-3.5 h-3.5 text-blue-600" /> Configurar Fechas
+          <Edit3 className="w-3.5 h-3.5 text-blue-600" /> Configurar Cuenta y Metas
         </button>
       </div>
 
@@ -333,131 +609,173 @@ const PropFirmTracker = ({ activeAccount, accountMeta, netPnl, onEditAccount }) 
 };
 
 // ==========================================
-// COMPONENTE PRINCIPAL APP
+// COMPONENTE PRINCIPAL
 // ==========================================
 const App = () => {
   const [user, setUser] = useState(null);
-  const [realTrades, setRealTrades] = useState([]);
-  const [accountsMeta, setAccountsMeta] = useState({});
-  const [isAccountConfigOpen, setIsAccountConfigOpen] = useState(false);
+  const [accounts, setAccounts] = useState([]);
+  const [tradingDays, setTradingDays] = useState([]);
+  const [selectedAccountId, setSelectedAccountId] = useState('all');
   const [dateFilter, setDateFilter] = useState('all');
-  const [selectedAccount, setSelectedAccount] = useState('all');
-  const [hasLoadedFirebase, setHasLoadedFirebase] = useState(false);
+  const [isAccountConfigOpen, setIsAccountConfigOpen] = useState(false);
+  const [isTradeEntryOpen, setIsTradeEntryOpen] = useState(false);
 
+  // 1. Autenticación
   useEffect(() => {
     signInAnonymously(auth).catch(e => console.error(e));
     return onAuthStateChanged(auth, setUser);
   }, []);
 
+  // 2. Carga y Normalización en Tiempo Real de Firestore
   useEffect(() => {
     if (!user) return;
-    
-    // Escuchar Metadatos (Cuentas, costos, payouts)
-    const unsubMeta = onSnapshot(collection(db, 'artifacts', appId, 'users', user.uid, 'accounts_meta'), (snap) => {
-      const metas = {}; 
-      snap.docs.forEach(d => metas[d.id] = d.data()); 
-      if (!snap.empty) setAccountsMeta(metas);
-      else setAccountsMeta(demoAccountsMeta); 
-    });
+    const uid = user.uid;
 
-    // Escuchar Trades y Normalizarlos
-    const unsubTrades = onSnapshot(collection(db, 'artifacts', appId, 'users', user.uid, 'trading_days'), (snap) => {
-      if (snap.empty && !hasLoadedFirebase) {
-        setRealTrades(demoTrades.map(t => normalizeTradingRecord(t)));
-      } else {
-        const data = snap.docs.map(doc => normalizeTradingRecord({ id: doc.id, ...doc.data() }));
-        setRealTrades(data);
+    // Listener de Cuentas
+    const unsubAccounts = onSnapshot(collection(db, 'artifacts', appId, 'users', uid, 'accounts'), (snap) => {
+      let accs = snap.docs.map(d => ({ accountId: d.id, ...d.data() }));
+      // Inicializar cuenta por defecto si está vacío
+      if (accs.length === 0) {
+        const defaultAcc = {
+          accountId: 'acc_principal',
+          name: 'Cuenta Principal',
+          type: 'funded',
+          targetProfit: 3000,
+          purchaseDate: '2026-07-01',
+          expirationDate: '2026-11-24',
+          initialBalance: 50000,
+          accountCost: 150,
+          totalPayouts: 1500,
+          activeCycleId: 'cycle_1'
+        };
+        setDoc(doc(db, 'artifacts', appId, 'users', uid, 'accounts', defaultAcc.accountId), defaultAcc);
+        accs = [defaultAcc];
       }
-      setHasLoadedFirebase(true);
+      setAccounts(accs);
     });
 
-    return () => { unsubMeta(); unsubTrades(); };
-  }, [user, hasLoadedFirebase]);
+    // Listener de Operaciones
+    const unsubTrades = onSnapshot(collection(db, 'artifacts', appId, 'users', uid, 'trading_days'), (snap) => {
+      const records = snap.docs.map(d => normalizeTradingRecord({ id: d.id, ...d.data() }));
+      records.sort((a, b) => a.date.localeCompare(b.date));
+      setTradingDays(records);
+    });
 
-  // Funciones de guardado de base de datos...
-  const handleSaveAccountMeta = async (newMeta) => {
-    if (!user) return;
-    const accountKey = selectedAccount === 'all' ? 'Cuenta Principal' : selectedAccount;
-    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'accounts_meta', accountKey), { ...newMeta, updatedAt: new Date().toISOString() }, { merge: true });
-    setAccountsMeta(prev => ({ ...prev, [accountKey]: newMeta }));
-  };
+    return () => { unsubAccounts(); unsubTrades(); };
+  }, [user]);
 
-  const handleRenameAccount = async (oldName, newName) => {
-    if (!user || oldName === newName || !newName.trim()) return;
-    const batch = writeBatch(db);
-    const tradesRef = collection(db, 'artifacts', appId, 'users', user.uid, 'trading_days');
-    const q = query(tradesRef, where("account", "==", oldName));
-    const snapshot = await getDocs(q);
-    snapshot.forEach(docSnap => batch.update(docSnap.ref, { account: newName }));
-    if (accountsMeta[oldName]) {
-      batch.set(doc(db, 'artifacts', appId, 'users', user.uid, 'accounts_meta', newName), { ...accountsMeta[oldName], updatedAt: new Date().toISOString() });
-      batch.delete(doc(db, 'artifacts', appId, 'users', user.uid, 'accounts_meta', oldName));
+  // Cuenta Activa
+  const activeAccount = useMemo(() => {
+    if (selectedAccountId === 'all') {
+      const totalCosts = accounts.reduce((s, a) => s + (Number(a.accountCost) || 0), 0);
+      const totalPayouts = accounts.reduce((s, a) => s + (Number(a.totalPayouts) || 0), 0);
+      const targetProfit = accounts.reduce((s, a) => s + (Number(a.targetProfit) || 0), 0);
+      return {
+        accountId: 'all',
+        name: 'Consolidado General',
+        type: 'funded',
+        targetProfit,
+        accountCost: totalCosts,
+        totalPayouts: totalPayouts,
+        purchaseDate: 'N/A',
+        expirationDate: 'N/A'
+      };
     }
-    await batch.commit();
-    setSelectedAccount(newName);
-  };
+    return accounts.find(a => a.accountId === selectedAccountId) || accounts[0] || null;
+  }, [accounts, selectedAccountId]);
 
-  const handleDeleteAccount = async (accountName) => {
+  // Acciones de Gestión de Cuentas
+  const handleSaveAccount = async (accId, updatedData) => {
     if (!user) return;
-    const batch = writeBatch(db);
-    const tradesRef = collection(db, 'artifacts', appId, 'users', user.uid, 'trading_days');
-    const snapshot = await getDocs(query(tradesRef, where("account", "==", accountName)));
-    snapshot.forEach(docSnap => batch.delete(docSnap.ref));
-    batch.delete(doc(db, 'artifacts', appId, 'users', user.uid, 'accounts_meta', accountName));
-    await batch.commit();
-    setSelectedAccount('all');
+    if (accId === 'all') {
+      const targetId = accounts[0]?.accountId;
+      if (targetId) {
+        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'accounts', targetId), updatedData, { merge: true });
+      }
+    } else {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'accounts', accId), updatedData, { merge: true });
+    }
   };
 
-  const handleResetAccountData = async (accountName) => {
+  const handleRenameAccount = async (accId, newName) => {
+    if (!user || accId === 'all') return;
+    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'accounts', accId), { name: newName }, { merge: true });
+  };
+
+  const handleDeleteAccount = async (accId) => {
+    if (!user || accId === 'all') return;
+    const batch = writeBatch(db);
+    batch.delete(doc(db, 'artifacts', appId, 'users', user.uid, 'accounts', accId));
+    const tradesQuery = query(collection(db, 'artifacts', appId, 'users', user.uid, 'trading_days'), where("accountId", "==", accId));
+    const snap = await getDocs(tradesQuery);
+    snap.forEach(d => batch.delete(d.ref));
+    await batch.commit();
+    setSelectedAccountId('all');
+  };
+
+  const handleResetAccountCycle = async (accId) => {
+    if (!user || accId === 'all') return;
+    const batch = writeBatch(db);
+    const tradesQuery = query(collection(db, 'artifacts', appId, 'users', user.uid, 'trading_days'), where("accountId", "==", accId));
+    const snap = await getDocs(tradesQuery);
+    snap.forEach(d => batch.delete(d.ref));
+    await batch.commit();
+  };
+
+  // Guardar Nuevo Trade
+  const handleSaveTrade = async (tradeData) => {
     if (!user) return;
-    const batch = writeBatch(db);
-    const tradesRef = collection(db, 'artifacts', appId, 'users', user.uid, 'trading_days');
-    const snapshot = await getDocs(query(tradesRef, where("account", "==", accountName)));
-    snapshot.forEach(docSnap => batch.delete(docSnap.ref)); 
-    await batch.commit();
-    if (realTrades.length > 0 && realTrades[0].id === '1') setRealTrades([]); // Limpiar demo
+    await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'trading_days'), {
+      ...tradeData,
+      createdAt: serverTimestamp()
+    });
   };
 
-  const handleDeleteTrade = async (docId) => { 
-    if (user && docId.length > 5) await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'trading_days', docId)); 
-    else setRealTrades(prev => prev.filter(t => t.id !== docId));
+  const handleCreateNewAccount = async () => {
+    if (!user) return;
+    const newId = `acc_${Date.now()}`;
+    const newAccount = {
+      accountId: newId,
+      name: `Nueva Cuenta #${accounts.length + 1}`,
+      type: 'eval',
+      targetProfit: 3000,
+      purchaseDate: new Date().toISOString().split('T')[0],
+      expirationDate: new Date(Date.now() + 30*24*60*60*1000).toISOString().split('T')[0],
+      initialBalance: 50000,
+      accountCost: 150,
+      totalPayouts: 0,
+      activeCycleId: `cycle_${Date.now()}`
+    };
+    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'accounts', newId), newAccount);
+    setSelectedAccountId(newId);
   };
-
-  const existingAccounts = useMemo(() => Array.from(new Set(realTrades.map(t => t.account || t.accountId || 'Cuenta Principal'))), [realTrades]);
 
   // ==========================================
-  // CORE LOGIC: FILTROS SEPARADOS
+  // SEPARACIÓN DE DATOS (ESTRUCTURAL VS ANALÍTICO)
   // ==========================================
-  
-  // 1. Datos estructurales de la cuenta (Todos los tiempos - Para el PropFirm Tracker)
-  const accountFilteredTrades = useMemo(() => {
-    return selectedAccount === 'all' 
-      ? realTrades 
-      : realTrades.filter(t => (t.account || t.accountId || 'Cuenta Principal') === selectedAccount);
-  }, [realTrades, selectedAccount]);
+  const accountTrades = useMemo(() => {
+    if (selectedAccountId === 'all') return tradingDays;
+    return tradingDays.filter(r => r.accountId === selectedAccountId);
+  }, [tradingDays, selectedAccountId]);
 
-  // 2. Datos analíticos (Afectados por fecha - Para los KPI, Gráficos y WinRate)
   const filteredTrades = useMemo(() => {
-    return dateFilter === 'all' 
-      ? accountFilteredTrades 
-      : accountFilteredTrades.filter(t => t.date.startsWith(dateFilter));
-  }, [accountFilteredTrades, dateFilter]);
+    if (dateFilter === 'all') return accountTrades;
+    return accountTrades.filter(r => r.date.startsWith(dateFilter));
+  }, [accountTrades, dateFilter]);
 
-  // 3. Cálculos estrictos usando tu nuevo metrics.js
-  const cycleStats = calculateTradingStats(accountFilteredTrades); 
+  // Métricas
+  const cycleStats = calculateTradingStats(accountTrades);
   const analyticalStats = calculateTradingStats(filteredTrades);
 
-  // 4. Transformar los datos del usuario en la estructura transaccional para el panel económico
-  const activeMetaKey = selectedAccount === 'all' ? 'Cuenta Principal' : selectedAccount;
-  const currentMeta = accountsMeta[activeMetaKey] || {};
+  const currentMeta = activeAccount || {};
   const simulatedTransactions = useMemo(() => [
     { type: 'account_cost', amount: currentMeta.accountCost || 0 },
     { type: 'payout', amount: currentMeta.totalPayouts || 0 }
   ], [currentMeta]);
-  
+
   const economicStats = calculateEconomicStats(analyticalStats.netPnl, simulatedTransactions);
 
-  // 5. Generación de Chart Data Robusto y Agregado
+  // Agrupación de días para charts y calendario reactivo
   const chartData = useMemo(() => {
     const aggregated = aggregateDailyTradingData(filteredTrades);
     let cum = 0;
@@ -473,177 +791,276 @@ const App = () => {
     });
   }, [filteredTrades]);
 
-  // Cálculo del porcentaje de días ganadores para el KPI
+  // Radar dinámico calculado según sesiones registradas
+  const radarScores = useMemo(() => {
+    const scoredTrades = filteredTrades.filter(t => t.tradeScore);
+    if (scoredTrades.length === 0) {
+      return radarMetricsList.map(metric => ({ subject: metric, score: 80, fullMark: 100 }));
+    }
+    return radarMetricsList.map(metric => {
+      const avg = scoredTrades.reduce((sum, t) => sum + (t.tradeScore[metric] || 0), 0) / scoredTrades.length;
+      return { subject: metric, score: Math.round(avg), fullMark: 100 };
+    });
+  }, [filteredTrades]);
+
   const dayWinPercent = chartData.length > 0 
     ? (chartData.filter(d => d.pnl > 0).length / chartData.length * 100) 
     : 0;
-  
-  // Porcentaje para la barra visual de Avg Win / Avg Loss
+
   const totalAvg = (analyticalStats.avgWin + analyticalStats.avgLoss) || 1;
   const avgWinWidth = (analyticalStats.avgWin / totalAvg) * 100;
   const avgLossWidth = 100 - avgWinWidth;
 
+  // Fechas únicas para selector
+  const availableMonths = useMemo(() => {
+    const months = new Set(tradingDays.map(t => t.date.substring(0, 7)));
+    return Array.from(months).sort().reverse();
+  }, [tradingDays]);
+
   return (
-    <DashboardContext.Provider value={{ chartData, rawData: filteredTrades, allTrades: realTrades, dateFilter, selectedAccount, onDeleteTrade: handleDeleteTrade }}>
-      <div className="min-h-screen bg-[#F8FAFC] text-slate-800 p-4 md:p-8 font-sans">
-        <div className="max-w-[1600px] mx-auto">
-          
-          <header className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
-            <div>
-              <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Trading Journal Dashboard</h1>
-              <p className="text-sm text-slate-500 mt-1 flex items-center gap-1.5">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600"/> Sincronizado en tiempo real
-              </p>
+    <div className="min-h-screen bg-[#F8FAFC] text-slate-800 p-4 md:p-8 font-sans">
+      <div className="max-w-[1600px] mx-auto">
+        
+        {/* Header con Acciones Principales */}
+        <header className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Trading Journal Dashboard</h1>
+            <p className="text-sm text-slate-500 mt-1 flex items-center gap-1.5">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600"/> Sincronizado en tiempo real
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Botón Nuevo Registro */}
+            <button 
+              onClick={() => setIsTradeEntryOpen(true)} 
+              className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-2 rounded-lg shadow-sm transition-colors"
+            >
+              <PlusCircle className="w-4 h-4" /> Registrar Sesión
+            </button>
+
+            {/* Selector de Cuentas */}
+            <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
+              <Wallet className="w-4 h-4 text-blue-500" />
+              <select 
+                className="bg-transparent border-none text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer" 
+                value={selectedAccountId} 
+                onChange={(e) => setSelectedAccountId(e.target.value)}
+              >
+                <option value="all">Consolidado General</option>
+                {accounts.map(a => <option key={a.accountId} value={a.accountId}>{a.name}</option>)}
+              </select>
             </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
-                <Wallet className="w-4 h-4 text-blue-500" />
-                <select className="bg-transparent border-none text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer" value={selectedAccount} onChange={(e) => setSelectedAccount(e.target.value)}>
-                  <option value="all">Consolidado General</option>
-                  {existingAccounts.map(a => <option key={a} value={a}>{a}</option>)}
-                </select>
+
+            {/* Crear Nueva Cuenta */}
+            <button 
+              onClick={handleCreateNewAccount} 
+              title="Crear Nueva Cuenta"
+              className="p-2 bg-white border border-gray-200 hover:bg-slate-50 rounded-lg text-slate-600 shadow-sm"
+            >
+              <PlusCircle className="w-4 h-4 text-slate-600" />
+            </button>
+
+            {/* Filtro de Fecha */}
+            <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
+              <Calendar className="w-4 h-4 text-slate-500" />
+              <select 
+                className="bg-transparent border-none text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer" 
+                value={dateFilter} 
+                onChange={(e) => setDateFilter(e.target.value)}
+              >
+                <option value="all">Historial Completo</option>
+                {availableMonths.map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </div>
+          </div>
+        </header>
+
+        <main>
+          {/* Tracker Estructural */}
+          <PropFirmTracker 
+            currentAccount={activeAccount} 
+            netPnl={cycleStats.netPnl} 
+            onEditAccount={() => setIsAccountConfigOpen(true)} 
+          />
+
+          {/* Resultado Económico Real */}
+          <EconomicPerformance stats={economicStats} />
+
+          {/* Métricas de Trading */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+            <Card>
+              <CardTitle title="Net P&L" subtitle="Resultado Operativo" icon={Activity} />
+              <div className="flex flex-col justify-between h-24">
+                <div className={`text-2xl font-black mt-2 ${analyticalStats.netPnl >= 0 ? 'text-emerald-600' : 'text-coral-500'}`}>
+                  {analyticalStats.netPnl >= 0 
+                    ? `+$${analyticalStats.netPnl.toLocaleString(undefined, {minimumFractionDigits: 2})}` 
+                    : `-$${Math.abs(analyticalStats.netPnl).toLocaleString(undefined, {minimumFractionDigits: 2})}`}
+                </div>
+                <span className="text-xs text-slate-400 font-medium">De {analyticalStats.totalTrades} operaciones</span>
               </div>
-              
-              <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
-                <Calendar className="w-4 h-4 text-slate-500" />
-                <select className="bg-transparent border-none text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)}>
-                  <option value="all">Historial Completo</option>
-                  <option value="2026-08">Agosto 2026</option>
-                </select>
+            </Card>
+            <Card>
+              <CardTitle title="Trade Win %" icon={Target} />
+              <SemiCircleGauge value={analyticalStats.winRate.toFixed(1)} max={100} label="Win Rate" suffix="%" color={themeColors.emerald} />
+            </Card>
+            <Card>
+              <CardTitle title="Profit Factor" icon={TrendingUp} />
+              <SemiCircleGauge value={analyticalStats.profitFactor === Infinity ? 5 : (analyticalStats.profitFactor || 0).toFixed(2)} max={5} label="Gross Win/Loss" color="#3B82F6" />
+            </Card>
+            <Card>
+              <CardTitle title="Day Win %" icon={CalendarDays} />
+              <SemiCircleGauge value={dayWinPercent.toFixed(1)} max={100} label="Días Positivos" suffix="%" color={themeColors.emerald} />
+            </Card>
+            <Card>
+              <CardTitle title="Avg Win / Loss" icon={ArrowUpRight} />
+              <div className="flex justify-between items-baseline mt-4 mb-3">
+                <span className="text-sm font-bold text-emerald-600">+${analyticalStats.avgWin.toFixed(2)}</span>
+                <span className="text-sm font-bold text-coral-500">-${analyticalStats.avgLoss.toFixed(2)}</span>
               </div>
-            </div>
-          </header>
-          
-          <main>
-            {/* El Tracker Estructural (Inmune al filtro de fecha) */}
-            <PropFirmTracker 
-              activeAccount={selectedAccount} 
-              accountMeta={accountsMeta[activeMetaKey]} 
-              netPnl={cycleStats.netPnl} 
-              onEditAccount={() => setIsAccountConfigOpen(true)} 
-            />
+              <div className="w-full bg-coral-100 h-2 rounded-full overflow-hidden flex">
+                <div className="bg-emerald-500 h-full transition-all" style={{ width: `${isNaN(avgWinWidth) ? 50 : avgWinWidth}%` }} />
+                <div className="bg-coral-500 h-full transition-all" style={{ width: `${isNaN(avgLossWidth) ? 50 : avgLossWidth}%` }} />
+              </div>
+            </Card>
+          </div>
 
-            {/* Nuevo Dashboard Económico */}
-            <EconomicPerformance stats={economicStats} />
-            
-            {/* KPI ROW (Afectado por los filtros analíticos) */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
-              <Card>
-                <CardTitle title="Net P&L" subtitle="Resultado Operativo" icon={Activity} />
-                <div className="flex flex-col justify-between h-24">
-                  <div className={`text-2xl font-black mt-2 ${analyticalStats.netPnl >= 0 ? 'text-emerald-600' : 'text-coral-500'}`}>
-                    {analyticalStats.netPnl >= 0 ? `+$${analyticalStats.netPnl.toLocaleString(undefined, {minimumFractionDigits: 2})}` : `-$${Math.abs(analyticalStats.netPnl).toLocaleString(undefined, {minimumFractionDigits: 2})}`}
+          {/* Gráficos */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+            <Card>
+              <CardTitle title="Trade Score" subtitle="Evaluación operativa" icon={Award} />
+              <div className="h-64">
+                <ResponsiveContainer>
+                  <RadarChart data={radarScores} cx="50%" cy="50%" outerRadius="75%">
+                    <PolarGrid />
+                    <PolarAngleAxis dataKey="subject" tick={{fontSize: 11, fill: '#64748B'}} />
+                    <PolarRadiusAxis domain={[0, 100]} tick={false} axisLine={false} />
+                    <Radar dataKey="score" stroke={themeColors.emerald} fill={themeColors.emerald} fillOpacity={0.4} />
+                  </RadarChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+            <Card>
+              <CardTitle title="Daily P&L" subtitle="Resultado neto diario" icon={BarChart2} />
+              <div className="h-64">
+                {chartData.length === 0 ? (
+                  <div className="h-full flex items-center justify-center text-xs text-slate-400">Sin datos para graficar</div>
+                ) : (
+                  <ResponsiveContainer>
+                    <BarChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
+                      <XAxis dataKey="date" fontSize={10} stroke="#94A3B8" tickLine={false} />
+                      <YAxis fontSize={11} stroke="#94A3B8" tickLine={false} tickFormatter={v=>`$${v}`} />
+                      <Tooltip contentStyle={{borderRadius:'8px', border:'none', boxShadow:'0 4px 6px -1px rgb(0 0 0 / 0.1)'}} />
+                      <Bar dataKey="pnl" radius={[4,4,0,0]}>
+                        {chartData.map((e, i) => <Cell key={i} fill={e.pnl >= 0 ? themeColors.emerald : themeColors.coral} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </Card>
+            <Card>
+              <CardTitle title="Cumulative P&L" subtitle="Curva de capital acumulado" icon={TrendingUp} />
+              <div className="h-64">
+                {chartData.length === 0 ? (
+                  <div className="h-full flex items-center justify-center text-xs text-slate-400">Sin datos para graficar</div>
+                ) : (
+                  <ResponsiveContainer>
+                    <AreaChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
+                      <XAxis dataKey="date" fontSize={10} stroke="#94A3B8" tickLine={false} />
+                      <YAxis fontSize={11} stroke="#94A3B8" tickLine={false} tickFormatter={v=>`$${v}`} />
+                      <Tooltip contentStyle={{borderRadius:'8px', border:'none', boxShadow:'0 4px 6px -1px rgb(0 0 0 / 0.1)'}} />
+                      <Area type="monotone" dataKey="cumulative" stroke={themeColors.emerald} strokeWidth={2.5} fill={themeColors.emerald} fillOpacity={0.15} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </Card>
+          </div>
+
+          {/* Calendario Dinámico basado en datos reales */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <Card className="lg:col-span-2 overflow-x-auto">
+              <div className="flex justify-between items-center mb-4">
+                <div>
+                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Trading Calendar</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">Operaciones registradas</p>
+                </div>
+              </div>
+              <div className="min-w-[550px]">
+                {chartData.length === 0 ? (
+                  <div className="py-12 text-center text-slate-400 text-xs">
+                    No hay operaciones en este rango. Haz clic en "Registrar Sesión" arriba para agregar trades.
                   </div>
-                  <span className="text-xs text-slate-400 font-medium">De {analyticalStats.totalTrades} operaciones</span>
-                </div>
-              </Card>
-              <Card><CardTitle title="Trade Win %" icon={Target} /><SemiCircleGauge value={analyticalStats.winRate.toFixed(1)} max={100} label="Win Rate" suffix="%" color={themeColors.emerald} /></Card>
-              <Card><CardTitle title="Profit Factor" icon={TrendingUp} /><SemiCircleGauge value={analyticalStats.profitFactor === Infinity ? 5 : (analyticalStats.profitFactor || 0).toFixed(2)} max={5} label="Gross Win/Loss" color="#3B82F6" /></Card>
-              <Card><CardTitle title="Day Win %" icon={CalendarDays} /><SemiCircleGauge value={dayWinPercent.toFixed(1)} max={100} label="Días Positivos" suffix="%" color={themeColors.emerald} /></Card>
-              <Card>
-                <CardTitle title="Avg Win / Loss" icon={ArrowUpRight} />
-                <div className="flex justify-between items-baseline mt-4 mb-3">
-                  <span className="text-sm font-bold text-emerald-600">+${analyticalStats.avgWin.toFixed(2)}</span>
-                  <span className="text-sm font-bold text-coral-500">-${analyticalStats.avgLoss.toFixed(2)}</span>
-                </div>
-                <div className="w-full bg-coral-100 h-2 rounded-full overflow-hidden flex">
-                  <div className="bg-emerald-500 h-full transition-all" style={{ width: `${isNaN(avgWinWidth) ? 50 : avgWinWidth}%` }} />
-                  <div className="bg-coral-500 h-full transition-all" style={{ width: `${isNaN(avgLossWidth) ? 50 : avgLossWidth}%` }} />
-                </div>
-              </Card>
-            </div>
-
-            {/* CHARTS ROW */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
-              <Card><CardTitle title="Trade Score" subtitle="Evaluación operativa" icon={Award} /><div className="h-64"><ResponsiveContainer><RadarChart data={radarData} cx="50%" cy="50%" outerRadius="75%"><PolarGrid /><PolarAngleAxis dataKey="subject" tick={{fontSize: 11, fill: '#64748B'}} /><PolarRadiusAxis domain={[0, 100]} tick={false} axisLine={false} /><Radar dataKey="score" stroke={themeColors.emerald} fill={themeColors.emerald} fillOpacity={0.4} /></RadarChart></ResponsiveContainer></div></Card>
-              <Card><CardTitle title="Daily P&L" subtitle="Resultado neto diario" icon={BarChart2} /><div className="h-64"><ResponsiveContainer><BarChart data={chartData}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" /><XAxis dataKey="day" fontSize={11} stroke="#94A3B8" tickLine={false} /><YAxis fontSize={11} stroke="#94A3B8" tickLine={false} tickFormatter={v=>`$${v}`} /><Tooltip contentStyle={{borderRadius:'8px', border:'none', boxShadow:'0 4px 6px -1px rgb(0 0 0 / 0.1)'}} /><Bar dataKey="pnl" radius={[4,4,0,0]}>{chartData.map((e, i) => <Cell key={i} fill={e.pnl >= 0 ? themeColors.emerald : themeColors.coral} />)}</Bar></BarChart></ResponsiveContainer></div></Card>
-              <Card><CardTitle title="Cumulative P&L" subtitle="Curva de capital acumulado" icon={TrendingUp} /><div className="h-64"><ResponsiveContainer><AreaChart data={chartData}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" /><XAxis dataKey="day" fontSize={11} stroke="#94A3B8" tickLine={false} /><YAxis fontSize={11} stroke="#94A3B8" tickLine={false} tickFormatter={v=>`$${v}`} /><Tooltip contentStyle={{borderRadius:'8px', border:'none', boxShadow:'0 4px 6px -1px rgb(0 0 0 / 0.1)'}} /><Area type="monotone" dataKey="cumulative" stroke={themeColors.emerald} strokeWidth={2.5} fill={themeColors.emerald} fillOpacity={0.15} /></AreaChart></ResponsiveContainer></div></Card>
-            </div>
-
-            {/* BOTTOM CALENDAR ROW Y OVERTRADING */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-              <Card className="lg:col-span-2 overflow-x-auto">
-                {/* ... Aquí mantuve el código exacto de tu calendario manual de la imagen ... */}
-                <div className="flex justify-between items-center mb-4">
-                  <div>
-                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Trading Calendar</h3>
-                    <p className="text-xs text-slate-400 mt-0.5">Desempeño mensual</p>
+                ) : (
+                  <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-7 gap-2">
+                    {chartData.map(day => (
+                      <div 
+                        key={day.date} 
+                        className={`p-2.5 rounded-xl border flex flex-col justify-between h-20 ${day.pnl >= 0 ? 'bg-emerald-50/40 border-emerald-200' : 'bg-rose-50/40 border-rose-200'}`}
+                      >
+                        <div className="flex justify-between items-start">
+                          <span className="text-[10px] font-bold text-slate-600">{day.date.substring(5)}</span>
+                          <span className={`text-xs font-black ${day.pnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                            {day.pnl >= 0 ? `+$${day.pnl.toFixed(0)}` : `-$${Math.abs(day.pnl).toFixed(0)}`}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-[10px] text-slate-400 font-medium">
+                          <span>{day.trades} trds</span>
+                          <span>{day.winRate.toFixed(0)}% W</span>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                </div>
-                <div className="min-w-[550px]">
-                  <div className="grid grid-cols-8 gap-1.5 text-center mb-2">
-                    {['LUN', 'MAR', 'MIÉ', 'JUE', 'VIE', 'SÁB', 'DOM'].map(d => <div key={d} className="text-[10px] font-bold text-slate-400 py-1">{d}</div>)}
-                    <div className="text-[10px] font-bold text-emerald-700 bg-emerald-50 rounded py-1">SEMANA</div>
-                  </div>
-                  
-                  {[
-                    [null, null, null, null, null, {d:1}, {d:2}, {sum:0, trd:0}],
-                    [{d:3}, {d:4}, {d:5}, {d:6}, {d:7}, {d:8}, {d:9}, {sum:0, trd:0}],
-                    [{d:10}, {d:11}, {d:12}, {d:13}, {d:14}, {d:15}, {d:16}, {sum:0, trd:0}],
-                    [{d:17, pnl:-235, trd:3, w:0}, {d:18, pnl:-434, trd:11, w:36}, {d:19, pnl:306.5, trd:30, w:46.67}, {d:20, pnl:-923, trd:24, w:37.5}, {d:21, pnl:311, trd:1, w:100}, {d:22}, {d:23}, {sum:-974.5, trd:69}],
-                    [{d:24, pnl:0, trd:5, w:40}, {d:25, pnl:-197.5, trd:8, w:25}, {d:26, pnl:583, trd:2, w:100}, {d:27, pnl:374.5, trd:1, w:100}, {d:28, pnl:-164, trd:3, w:33.33}, {d:29}, {d:30}, {sum:596, trd:19}],
-                    [{d:31, pnl:608, trd:1, w:100}, null, null, null, null, null, null, {sum:608, trd:1}]
-                  ].map((week, i) => (
-                    <div key={i} className="grid grid-cols-8 gap-1.5 mb-1.5">
-                      {week.map((cell, j) => {
-                        if (j === 7) return (
-                          <div key={j} className={`h-16 rounded-lg flex flex-col justify-center items-center ${cell.sum > 0 ? 'bg-emerald-50 text-emerald-600' : cell.sum < 0 ? 'bg-coral-50 text-coral-600' : 'bg-slate-50 text-slate-400'}`}>
-                            <span className="text-[9px] font-bold uppercase">P&L Neto</span>
-                            <span className="text-xs font-black">{cell.sum > 0 ? `+${cell.sum}` : cell.sum}</span>
-                            <span className="text-[9px] font-medium text-slate-500">{cell.trd} trd</span>
-                          </div>
-                        );
-                        if (!cell) return <div key={j} className="h-16 bg-slate-50/50 rounded-lg border border-slate-100/60" />;
-                        return (
-                          <div key={j} className={`h-16 p-1.5 rounded-lg border flex flex-col justify-between ${cell.pnl !== undefined ? (cell.pnl >= 0 ? 'bg-emerald-50/40 border-emerald-200' : 'bg-coral-50/40 border-coral-200') : 'bg-white border-slate-100'}`}>
-                            <div className="flex justify-between items-start">
-                              <span className="text-[11px] font-bold text-slate-700">{cell.d}</span>
-                              {cell.pnl !== undefined && <span className={`text-[11px] font-black ${cell.pnl >= 0 ? 'text-emerald-600' : 'text-coral-500'}`}>{cell.pnl >= 0 ? `+${cell.pnl}` : cell.pnl}</span>}
-                            </div>
-                            {cell.pnl !== undefined && (
-                              <div className="flex justify-between text-[9px] text-slate-500">
-                                <span>{cell.trd} Trd</span>
-                                <span>{cell.w}% W</span>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ))}
-                </div>
-              </Card>
+                )}
+              </div>
+            </Card>
 
-              <Card>
-                <CardTitle title="Overtrading Analysis" subtitle="Total Trades vs P&L" icon={TrendingUp} />
-                <div className="h-64"><ResponsiveContainer>
-                  <ScatterChart margin={{ top: 10, right: 10, bottom: 20, left: -10 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-                    <XAxis type="number" dataKey="trades" name="Trades" stroke="#94A3B8" fontSize={11} label={{ value: 'Total Trades', position: 'insideBottom', offset: -10, fontSize: 10, fill: '#94A3B8' }}/>
-                    <YAxis type="number" dataKey="pnl" name="P&L" stroke="#94A3B8" fontSize={11} tickFormatter={v=>`$${v}`} />
-                    <Tooltip cursor={{strokeDasharray:'3 3'}} content={({payload}) => payload?.length ? <div className="bg-white p-2 rounded shadow border text-xs"><p className="font-bold">Trades: {payload[0].payload.trades}</p><p className={payload[0].payload.pnl>=0?'text-emerald-600':'text-coral-500'}>P&L: ${payload[0].payload.pnl}</p></div> : null}/>
-                    <Scatter data={filteredTrades.map(r=>({trades:r.totalTrades, pnl:r.netPnl, isWin:r.netPnl>=0}))}>
-                      {filteredTrades.map((e, i) => <Cell key={i} fill={e.netPnl >= 0 ? themeColors.emerald : themeColors.coral} />)}
-                    </Scatter>
-                  </ScatterChart>
-                </ResponsiveContainer></div>
-              </Card>
-            </div>
-          </main>
-        </div>
+            <Card>
+              <CardTitle title="Overtrading Analysis" subtitle="Total Trades vs P&L" icon={TrendingUp} />
+              <div className="h-64">
+                {filteredTrades.length === 0 ? (
+                  <div className="h-full flex items-center justify-center text-xs text-slate-400">Sin datos de sobreoperativa</div>
+                ) : (
+                  <ResponsiveContainer>
+                    <ScatterChart margin={{ top: 10, right: 10, bottom: 20, left: -10 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
+                      <XAxis type="number" dataKey="totalTrades" name="Trades" stroke="#94A3B8" fontSize={11} />
+                      <YAxis type="number" dataKey="netPnl" name="P&L" stroke="#94A3B8" fontSize={11} tickFormatter={v=>`$${v}`} />
+                      <Tooltip cursor={{strokeDasharray:'3 3'}} />
+                      <Scatter data={filteredTrades}>
+                        {filteredTrades.map((e, i) => <Cell key={i} fill={e.netPnl >= 0 ? themeColors.emerald : themeColors.coral} />)}
+                      </Scatter>
+                    </ScatterChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </Card>
+          </div>
+        </main>
       </div>
-      
+
+      {/* Modal Configuración de Cuentas */}
       <AccountConfigModal 
         isOpen={isAccountConfigOpen} 
         onClose={() => setIsAccountConfigOpen(false)} 
-        accountName={selectedAccount} 
-        initialMeta={accountsMeta[activeMetaKey]} 
-        onSave={handleSaveAccountMeta} 
+        currentAccount={activeAccount} 
+        onSave={handleSaveAccount} 
         onRename={handleRenameAccount} 
         onDelete={handleDeleteAccount} 
-        onReset={handleResetAccountData} 
+        onReset={handleResetAccountCycle} 
       />
-    </DashboardContext.Provider>
+
+      {/* Modal Registro de Trades */}
+      <TradeEntryModal 
+        isOpen={isTradeEntryOpen} 
+        onClose={() => setIsTradeEntryOpen(false)} 
+        onSave={handleSaveTrade} 
+        accounts={accounts} 
+        activeAccountId={selectedAccountId} 
+      />
+    </div>
   );
 };
 
