@@ -58,7 +58,7 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
       const formatted = rawList.map((item) => {
         const date = item.date || (item.entryTime ? item.entryTime.split(' ')[0] : new Date().toISOString().split('T')[0]);
         const trade = {
-          symbol: item.symbol || item.ticker || 'NQ',
+          symbol: item.symbol || item.ticker || 'MNQ',
           direction: (item.direction || item.side || 'LONG').toUpperCase(),
           date,
           entryTime: item.entryTime || `${date} 09:30`,
@@ -66,12 +66,12 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
           quantity: Number(item.quantity || item.contracts || 1),
           entryPrice: Number(item.entryPrice || item.entry || 0),
           exitPrice: Number(item.exitPrice || item.exit || 0),
-          stopLoss: item.stopLoss ? Number(item.stopLoss) : null,
+          stopLoss: item.stopLoss !== null && item.stopLoss !== undefined && item.stopLoss !== '' ? Number(item.stopLoss) : '',
           takeProfit: item.takeProfit ? Number(item.takeProfit) : null,
           netPnl: Number(item.netPnl ?? item.pnl ?? 0),
           accountId: selectedAccount
         };
-        trade.rMultiple = item.rMultiple !== undefined ? Number(item.rMultiple) : calculateTradeR(trade);
+        trade.rMultiple = trade.stopLoss !== '' ? calculateTradeR(trade) : null;
         return trade;
       });
 
@@ -79,6 +79,38 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
     } catch {
       setJsonError("Error al procesar JSON. Verifica la sintaxis.");
     }
+  };
+
+  // Permite actualizar el Stop Loss trade por trade en la tabla interactiva
+  const handleUpdateStopLoss = (index, value) => {
+    setJsonPreview(prev => {
+      const updated = [...prev];
+      const trade = { ...updated[index] };
+      const numericVal = value === '' ? '' : Number(value);
+      trade.stopLoss = numericVal;
+
+      if (numericVal !== '' && !isNaN(numericVal)) {
+        trade.rMultiple = calculateTradeR({
+          ...trade,
+          stopLoss: numericVal
+        });
+      } else {
+        trade.rMultiple = null;
+      }
+
+      updated[index] = trade;
+      return updated;
+    });
+  };
+
+  const handleSaveImportedTrades = () => {
+    const sanitizedTrades = jsonPreview.map(t => ({
+      ...t,
+      stopLoss: t.stopLoss === '' ? null : Number(t.stopLoss),
+      rMultiple: t.rMultiple !== null ? Number(t.rMultiple) : null
+    }));
+    onSaveTrades(sanitizedTrades);
+    onClose();
   };
 
   const handleCsvUpload = (e) => {
@@ -101,7 +133,7 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
 
         const date = row.date || new Date().toISOString().split('T')[0];
         const trade = {
-          symbol: row.symbol || row.ticker || 'NQ',
+          symbol: row.symbol || row.ticker || 'MNQ',
           direction: (row.direction || row.side || 'LONG').toUpperCase(),
           date,
           entryTime: row.entrytime || `${date} 09:30`,
@@ -109,12 +141,12 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
           quantity: Number(row.quantity || row.qty || 1),
           entryPrice: Number(row.entryprice || row.entry || 0),
           exitPrice: Number(row.exitprice || row.exit || 0),
-          stopLoss: row.stoploss ? Number(row.stoploss) : null,
+          stopLoss: row.stoploss ? Number(row.stoploss) : '',
           takeProfit: row.takeprofit ? Number(row.takeprofit) : null,
           netPnl: Number(row.netpnl || row.pnl || 0),
           accountId: selectedAccount
         };
-        trade.rMultiple = calculateTradeR(trade);
+        trade.rMultiple = trade.stopLoss !== '' ? calculateTradeR(trade) : null;
         trades.push(trade);
       }
       setJsonPreview(trades);
@@ -125,7 +157,7 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
 
   return (
     <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden border border-slate-100 flex flex-col max-h-[90vh]">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl overflow-hidden border border-slate-100 flex flex-col max-h-[90vh]">
         <div className="flex justify-between items-center px-6 py-4 border-b border-slate-100">
           <div>
             <h2 className="text-base font-bold text-slate-800">Registrar Operaciones Individuales</h2>
@@ -248,10 +280,10 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
                   <button onClick={handleParseJson} className="font-bold text-blue-600 hover:underline">Procesar y Previsualizar</button>
                 </div>
                 <textarea 
-                  rows="4" 
+                  rows="3" 
                   value={jsonText} 
                   onChange={e => setJsonText(e.target.value)} 
-                  placeholder='[{"symbol":"NQ","direction":"LONG","entryTime":"2026-09-24 09:35","exitTime":"2026-09-24 09:48","entryPrice":19850,"exitPrice":19875,"stopLoss":19840,"netPnl":500}]'
+                  placeholder='[{"symbol":"MNQ","direction":"LONG", ...}]'
                   className="w-full text-xs font-mono p-3 bg-slate-50 border rounded-lg outline-none"
                 />
                 {jsonError && <p className="text-xs text-rose-600 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5"/> {jsonError}</p>}
@@ -260,34 +292,63 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
               {jsonPreview.length > 0 && (
                 <div className="space-y-3 pt-2 border-t">
                   <div className="flex justify-between items-center">
-                    <span className="text-xs font-bold text-slate-700">Trades detectados ({jsonPreview.length})</span>
+                    <div>
+                      <span className="text-xs font-bold text-slate-700">Trades detectados ({jsonPreview.length})</span>
+                      <p className="text-[11px] text-slate-400">Ingresa el Stop Loss para calcular el ratio R de cada orden.</p>
+                    </div>
                     <button 
                       type="button" 
-                      onClick={() => { onSaveTrades(jsonPreview); onClose(); }} 
-                      className="px-4 py-1.5 bg-emerald-600 text-white text-xs font-bold rounded-lg hover:bg-emerald-700"
+                      onClick={handleSaveImportedTrades} 
+                      className="px-4 py-1.5 bg-emerald-600 text-white text-xs font-bold rounded-lg hover:bg-emerald-700 transition-colors shadow-sm"
                     >
                       Importar {jsonPreview.length} Operaciones
                     </button>
                   </div>
-                  <div className="max-h-48 overflow-y-auto border rounded-lg text-[11px]">
-                    <table className="w-full text-left">
-                      <thead className="bg-slate-50 text-slate-500 border-b">
+
+                  <div className="max-h-60 overflow-y-auto border rounded-xl text-xs">
+                    <table className="w-full text-left border-collapse">
+                      <thead className="bg-slate-50 text-slate-500 border-b sticky top-0">
                         <tr>
-                          <th className="p-2">Hora</th>
-                          <th className="p-2">Activo</th>
-                          <th className="p-2">L/S</th>
-                          <th className="p-2">P&L</th>
-                          <th className="p-2">R</th>
+                          <th className="p-2.5 font-semibold">Hora</th>
+                          <th className="p-2.5 font-semibold">Activo</th>
+                          <th className="p-2.5 font-semibold">L/S</th>
+                          <th className="p-2.5 font-semibold">Entrada</th>
+                          <th className="p-2.5 font-semibold">Salida</th>
+                          <th className="p-2.5 font-semibold w-28">Stop Loss</th>
+                          <th className="p-2.5 font-semibold">P&L</th>
+                          <th className="p-2.5 font-semibold">R</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y">
+                      <tbody className="divide-y divide-slate-100">
                         {jsonPreview.map((t, idx) => (
-                          <tr key={idx}>
-                            <td className="p-2 text-slate-500">{t.entryTime.substring(11, 16) || t.entryTime}</td>
-                            <td className="p-2 font-bold">{t.symbol}</td>
-                            <td className={`p-2 font-bold ${t.direction === 'LONG' ? 'text-blue-600' : 'text-amber-600'}`}>{t.direction}</td>
-                            <td className={`p-2 font-bold ${t.netPnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>${t.netPnl}</td>
-                            <td className="p-2 font-mono text-slate-500">{t.rMultiple ? `${t.rMultiple}R` : '-'}</td>
+                          <tr key={idx} className="hover:bg-slate-50/70">
+                            <td className="p-2.5 text-slate-500">{t.entryTime.substring(11, 16) || t.entryTime}</td>
+                            <td className="p-2.5 font-bold">{t.symbol}</td>
+                            <td className={`p-2.5 font-bold ${t.direction === 'LONG' ? 'text-blue-600' : 'text-amber-600'}`}>{t.direction}</td>
+                            <td className="p-2.5 font-mono text-slate-600">{t.entryPrice}</td>
+                            <td className="p-2.5 font-mono text-slate-600">{t.exitPrice}</td>
+                            <td className="p-1.5">
+                              <input 
+                                type="number" 
+                                step="any"
+                                value={t.stopLoss}
+                                onChange={(e) => handleUpdateStopLoss(idx, e.target.value)}
+                                placeholder="Precio SL"
+                                className="w-full p-1.5 border border-slate-200 rounded-lg text-xs font-mono text-rose-600 focus:border-rose-400 outline-none"
+                              />
+                            </td>
+                            <td className={`p-2.5 font-bold ${t.netPnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                              {t.netPnl >= 0 ? `+$${t.netPnl}` : `-$${Math.abs(t.netPnl)}`}
+                            </td>
+                            <td className="p-2.5 font-mono font-bold text-slate-700">
+                              {t.rMultiple !== null ? (
+                                <span className={t.rMultiple >= 1 ? 'text-emerald-600' : t.rMultiple > 0 ? 'text-blue-600' : 'text-rose-600'}>
+                                  {t.rMultiple > 0 ? `+${t.rMultiple}R` : `${t.rMultiple}R`}
+                                </span>
+                              ) : (
+                                <span className="text-slate-300">-</span>
+                              )}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
