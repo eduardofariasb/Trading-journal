@@ -67,9 +67,11 @@ const SemiCircleGauge = ({ value, max, label, prefix = "", suffix = "", color = 
   );
 };
 
+// Validación segura de fechas para evitar NaN
 const getRemainingTradingDays = (targetDateStr) => {
-  if (!targetDateStr || typeof targetDateStr !== 'string') return 0;
+  if (!targetDateStr || typeof targetDateStr !== 'string' || !targetDateStr.includes('-')) return 0;
   const parts = targetDateStr.split('-').map(Number);
+  if (parts.length < 3 || isNaN(parts[0]) || isNaN(parts[1]) || isNaN(parts[2])) return 0;
   const targetDate = new Date(parts[0], parts[1] - 1, parts[2]);
   targetDate.setHours(0, 0, 0, 0);
   const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -83,8 +85,9 @@ const getRemainingTradingDays = (targetDateStr) => {
 };
 
 const getCalendarDaysLeft = (targetDateStr) => {
-  if (!targetDateStr || typeof targetDateStr !== 'string') return 0;
+  if (!targetDateStr || typeof targetDateStr !== 'string' || !targetDateStr.includes('-')) return '-';
   const parts = targetDateStr.split('-').map(Number);
+  if (parts.length < 3 || isNaN(parts[0]) || isNaN(parts[1]) || isNaN(parts[2])) return '-';
   const targetDate = new Date(parts[0], parts[1] - 1, parts[2]);
   targetDate.setHours(0, 0, 0, 0);
   const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -121,7 +124,7 @@ const AccountConfigModal = ({ isOpen, onClose, currentAccount, onSave, onRename,
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    const finalName = name.trim() || 'Mi Cuenta';
+    const finalName = name.trim() || currentAccount.name || 'Mi Cuenta';
     if (!isAll && finalName !== currentAccount.name) {
       onRename(currentAccount.accountId, finalName);
     }
@@ -155,7 +158,7 @@ const AccountConfigModal = ({ isOpen, onClose, currentAccount, onSave, onRename,
           <h3 className="text-xl font-bold text-slate-800">¿Estás seguro?</h3>
           <p className="text-sm text-slate-500 leading-relaxed">
             {confirmAction === 'reset' 
-              ? `Esto archivará el ciclo actual de "${currentAccount.name}". Las métricas iniciarán desde cero.`
+              ? `Esto archivará el ciclo actual de "${currentAccount.name}". Las operaciones se reiniciarán a cero para este ciclo.`
               : `Esto eliminará permanentemente la cuenta "${currentAccount.name}" y todos sus trades.`}
           </p>
           <div className="flex gap-3 pt-4 mt-2 border-t border-slate-100">
@@ -255,7 +258,7 @@ const PropFirmTracker = ({ currentAccount, netPnl, onEditAccount }) => {
   const tradingDaysLeft = getRemainingTradingDays(meta.expirationDate);
   const calDaysLeft = getCalendarDaysLeft(meta.expirationDate);
   const requiredDailyAvg = (!isFunded && tradingDaysLeft > 0) ? (remainingPnl / tradingDaysLeft) : 0;
-  const progressPercent = Math.min(100, Math.max(0, Math.round((currentPnl / target) * 100)));
+  const progressPercent = target > 0 ? Math.min(100, Math.max(0, Math.round((currentPnl / target) * 100))) : 0;
   const cost = Number(meta.accountCost) || 0;
   const payouts = Number(meta.totalPayouts) || 0;
   const netBalance = payouts - cost;
@@ -276,18 +279,16 @@ const PropFirmTracker = ({ currentAccount, netPnl, onEditAccount }) => {
                 {isFunded ? "🏆 Fondeada" : "🎯 Evaluación"}
               </span>
             </div>
-            <p className="text-xs text-slate-500 mt-0.5">Compra: {String(meta?.purchaseDate)} • Vence: {String(meta?.expirationDate)}</p>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {isAll 
+                ? "Métricas acumuladas de todas las cuentas registradas" 
+                : `Compra: ${String(meta?.purchaseDate)} • Vence: ${String(meta?.expirationDate)}`}
+            </p>
           </div>
         </div>
         <button 
           onClick={onEditAccount} 
-          disabled={isAll}
-          title={isAll ? "Selecciona una cuenta en el menú superior para configurarla" : "Configurar cuenta"}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
-            isAll 
-              ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed' 
-              : 'border-slate-200 hover:bg-slate-50 text-slate-700'
-          }`}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 transition-colors"
         >
           <Edit3 className="w-3.5 h-3.5 text-blue-600" /> Configurar Cuenta y Metas
         </button>
@@ -298,7 +299,10 @@ const PropFirmTracker = ({ currentAccount, netPnl, onEditAccount }) => {
           <div className="p-2 bg-white rounded-lg border border-slate-200 text-blue-600 shadow-2xs"><CalendarClock className="w-5 h-5" /></div>
           <div>
             <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">Tiempo Restante</span>
-            <div className="flex items-baseline gap-1 mt-0.5"><span className="text-lg font-black text-slate-800">{calDaysLeft}</span><span className="text-xs text-slate-500">días</span></div>
+            <div className="flex items-baseline gap-1 mt-0.5">
+              <span className="text-lg font-black text-slate-800">{calDaysLeft}</span>
+              {calDaysLeft !== '-' && <span className="text-xs text-slate-500">días</span>}
+            </div>
           </div>
         </div>
 
@@ -434,21 +438,30 @@ export default function App() {
   };
 
   const handleResetAccountCycle = async (accId) => {
-    if (!user || accId === 'all') return;
+    if (!user) return;
     const batch = writeBatch(db);
-    const tradesQuery = query(collection(db, 'artifacts', appId, 'users', user.uid, 'trades'), where("accountId", "==", accId));
-    const snap = await getDocs(tradesQuery);
-    snap.forEach(d => batch.delete(d.ref));
+    const snap = await getDocs(collection(db, 'artifacts', appId, 'users', user.uid, 'trades'));
+    snap.forEach(d => {
+      const data = d.data();
+      // Borra los trades de la cuenta o los huérfanos sin accountId
+      if (accId === 'all' || data.accountId === accId || !data.accountId) {
+        batch.delete(d.ref);
+      }
+    });
     await batch.commit();
   };
 
+  // Garantiza que cada nuevo trade lleve SIEMPRE un accountId válido
   const handleSaveTradesBatch = async (newTrades) => {
     if (!user) return;
     const batch = writeBatch(db);
+    const targetAccId = (selectedAccountId !== 'all' ? selectedAccountId : accounts[0]?.accountId) || 'acc_principal';
+    
     newTrades.forEach(t => {
       const ref = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'trades'));
       batch.set(ref, {
         ...t,
+        accountId: (t.accountId && t.accountId !== 'all') ? t.accountId : targetAccId,
         createdAt: serverTimestamp()
       });
     });
@@ -474,10 +487,29 @@ export default function App() {
     setSelectedAccountId(newId);
   };
 
+  // Filtro resiliente: rescata trades huérfanos y los vincula a la cuenta activa
   const accountTrades = useMemo(() => {
     if (selectedAccountId === 'all') return trades;
-    return trades.filter(r => r.accountId === selectedAccountId);
-  }, [trades, selectedAccountId]);
+    
+    const currentAcc = accounts.find(a => a.accountId === selectedAccountId);
+    const accId = selectedAccountId;
+    const accName = currentAcc?.name;
+
+    return trades.filter(r => {
+      if (r.accountId && r.accountId === accId) return true;
+      if (r.account && (r.account === accName || r.account === accId)) return true;
+      // Rescate si el trade no tenía accountId y es la única cuenta o la primera
+      if ((!r.accountId || r.accountId === 'all' || r.accountId === 'undefined') && (accounts.length <= 1 || accId === accounts[0]?.accountId)) {
+        return true;
+      }
+      // Rescate si el trade tiene un ID huérfano que ya no existe en accounts
+      const matchesAnyAccount = accounts.some(a => a.accountId === r.accountId);
+      if (!matchesAnyAccount && (accounts.length <= 1 || accId === accounts[0]?.accountId)) {
+        return true;
+      }
+      return false;
+    });
+  }, [trades, selectedAccountId, accounts]);
 
   const filteredTrades = useMemo(() => {
     if (dateFilter === 'all') return accountTrades;
@@ -688,7 +720,7 @@ export default function App() {
             </Card>
           </div>
 
-          {/* Calendario Dinámico y Overtrading */}
+          {/* Calendario Dinámico y Overtrading (Limpio y sin duplicados) */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="lg:col-span-2">
               <TradingCalendar dailyData={dailyAggregated} />
@@ -726,7 +758,7 @@ export default function App() {
       <AccountConfigModal 
         isOpen={isAccountConfigOpen} 
         onClose={() => setIsAccountConfigOpen(false)} 
-        currentAccount={activeAccount} 
+        currentAccount={selectedAccountId === 'all' ? (accounts[0] || activeAccount) : activeAccount} 
         onSave={handleSaveAccount} 
         onRename={handleRenameAccount} 
         onDelete={handleDeleteAccount} 
