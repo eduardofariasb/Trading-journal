@@ -1,8 +1,25 @@
 // src/utils/metrics.js
 
-/**
- * Calcula el múltiplo R de un trade individual basado en puntos
- */
+// Umbrales configurables
+export const THRESHOLDS = {
+  TRADE_WIN: 15,
+  TRADE_LOSS: -15,
+  DAY_WIN: 30,
+  DAY_LOSS: -20
+};
+
+export function getTradeStatus(netPnl) {
+  if (netPnl > THRESHOLDS.TRADE_WIN) return 'WIN';
+  if (netPnl < THRESHOLDS.TRADE_LOSS) return 'LOSS';
+  return 'BE';
+}
+
+export function getDayStatus(netPnl) {
+  if (netPnl > THRESHOLDS.DAY_WIN) return 'WIN';
+  if (netPnl < THRESHOLDS.DAY_LOSS) return 'LOSS';
+  return 'BE';
+}
+
 export function calculateTradeR(trade) {
   const { entryPrice, exitPrice, stopLoss, direction } = trade;
   if (!entryPrice || !exitPrice || !stopLoss) return null;
@@ -10,20 +27,17 @@ export function calculateTradeR(trade) {
   const riskPoints = Math.abs(entryPrice - stopLoss);
   if (riskPoints <= 0) return null;
 
-  const isLong = direction.toUpperCase() === 'LONG';
+  const isLong = String(direction).toUpperCase() === 'LONG';
   const gainedPoints = isLong ? (exitPrice - entryPrice) : (entryPrice - exitPrice);
 
   return Number((gainedPoints / riskPoints).toFixed(2));
 }
 
-/**
- * Agrega trades individuales en días operativos para el Calendario y Gráficos diarios
- */
 export function aggregateTradesToDaily(trades = []) {
   const map = new Map();
 
   for (const t of trades) {
-    const key = `${t.accountId}_${t.date}`;
+    const key = `${t.accountId || 'all'}_${t.date}`;
     if (!map.has(key)) {
       map.set(key, {
         date: t.date,
@@ -33,6 +47,7 @@ export function aggregateTradesToDaily(trades = []) {
         totalTrades: 0,
         winningTrades: 0,
         losingTrades: 0,
+        beTrades: 0,
         grossWin: 0,
         grossLoss: 0,
         trades: []
@@ -44,26 +59,27 @@ export function aggregateTradesToDaily(trades = []) {
     day.totalTrades += 1;
     day.trades.push(t);
 
-    if (t.netPnl > 0) {
+    const status = getTradeStatus(t.netPnl);
+    if (status === 'WIN') {
       day.winningTrades += 1;
       day.grossWin += t.netPnl;
-    } else if (t.netPnl < 0) {
+    } else if (status === 'LOSS') {
       day.losingTrades += 1;
       day.grossLoss += Math.abs(t.netPnl);
+    } else {
+      day.beTrades += 1;
     }
   }
 
   return Array.from(map.values()).map(d => ({
     ...d,
+    dayStatus: getDayStatus(d.netPnl),
     winRate: d.totalTrades > 0 ? (d.winningTrades / d.totalTrades) * 100 : 0,
     avgWin: d.winningTrades > 0 ? d.grossWin / d.winningTrades : 0,
     avgLoss: d.losingTrades > 0 ? d.grossLoss / d.losingTrades : 0
   })).sort((a, b) => a.date.localeCompare(b.date));
 }
 
-/**
- * Métricas generales calculadas a partir de trades atómicos reales
- */
 export function calculateTradingStats(trades = []) {
   if (!trades || trades.length === 0) {
     return {
@@ -72,6 +88,7 @@ export function calculateTradingStats(trades = []) {
       totalTrades: 0,
       winningTrades: 0,
       losingTrades: 0,
+      beTrades: 0,
       winRate: 0,
       grossWin: 0,
       grossLoss: 0,
@@ -81,6 +98,10 @@ export function calculateTradingStats(trades = []) {
       avgR: null,
       maxR: null,
       tradingDaysCount: 0,
+      winningDaysCount: 0,
+      losingDaysCount: 0,
+      beDaysCount: 0,
+      dayWinRate: 0,
       maxDrawdown: 0
     };
   }
@@ -88,6 +109,7 @@ export function calculateTradingStats(trades = []) {
   let netPnl = 0;
   let winningTrades = 0;
   let losingTrades = 0;
+  let beTrades = 0;
   let grossWin = 0;
   let grossLoss = 0;
   let sumR = 0;
@@ -96,12 +118,16 @@ export function calculateTradingStats(trades = []) {
 
   for (const t of trades) {
     netPnl += t.netPnl;
-    if (t.netPnl > 0) {
+    const status = getTradeStatus(t.netPnl);
+
+    if (status === 'WIN') {
       winningTrades += 1;
       grossWin += t.netPnl;
-    } else if (t.netPnl < 0) {
+    } else if (status === 'LOSS') {
       losingTrades += 1;
       grossLoss += Math.abs(t.netPnl);
+    } else {
+      beTrades += 1;
     }
 
     if (t.rMultiple !== null && !isNaN(t.rMultiple)) {
@@ -112,17 +138,24 @@ export function calculateTradingStats(trades = []) {
   }
 
   const totalTrades = trades.length;
+  // Win rate basado en trades ganadores reales (> $15)
   const winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0;
   
   let profitFactor = null;
   if (grossLoss > 0) profitFactor = grossWin / grossLoss;
   else if (grossWin > 0) profitFactor = Infinity;
 
-  // Max Drawdown trade a trade
+  const dailyAgg = aggregateTradesToDaily(trades);
+  const winningDaysCount = dailyAgg.filter(d => d.dayStatus === 'WIN').length;
+  const losingDaysCount = dailyAgg.filter(d => d.dayStatus === 'LOSS').length;
+  const beDaysCount = dailyAgg.filter(d => d.dayStatus === 'BE').length;
+  const dayWinRate = dailyAgg.length > 0 ? (winningDaysCount / dailyAgg.length) * 100 : 0;
+
+  // Max Drawdown
   let peak = 0;
   let runningPnl = 0;
   let maxDrawdown = 0;
-  const sorted = [...trades].sort((a, b) => a.entryTime.localeCompare(b.entryTime));
+  const sorted = [...trades].sort((a, b) => (a.entryTime || a.date).localeCompare(b.entryTime || b.date));
   for (const t of sorted) {
     runningPnl += t.netPnl;
     if (runningPnl > peak) peak = runningPnl;
@@ -130,14 +163,13 @@ export function calculateTradingStats(trades = []) {
     if (dd > maxDrawdown) maxDrawdown = dd;
   }
 
-  const dailyAgg = aggregateTradesToDaily(trades);
-
   return {
     hasData: totalTrades > 0,
     netPnl,
     totalTrades,
     winningTrades,
     losingTrades,
+    beTrades,
     winRate,
     grossWin,
     grossLoss,
@@ -147,20 +179,20 @@ export function calculateTradingStats(trades = []) {
     avgR: countR > 0 ? Number((sumR / countR).toFixed(2)) : null,
     maxR: countR > 0 && maxR !== -Infinity ? maxR : null,
     tradingDaysCount: dailyAgg.length,
+    winningDaysCount,
+    losingDaysCount,
+    beDaysCount,
+    dayWinRate,
     maxDrawdown
   };
 }
 
-/**
- * Métrica 1: Desempeño por franja horaria (Hora de entrada)
- */
 export function calculateHourlyPerformance(trades = []) {
   const hourMap = {};
 
   for (const t of trades) {
     let hour = '09:00';
     if (t.entryTime) {
-      // Extrae la hora ya sea "2026-09-24 09:35" o "09:35"
       const match = t.entryTime.match(/(\d{1,2}):\d{2}/);
       if (match) {
         hour = `${match[1].padStart(2, '0')}:00`;
@@ -173,7 +205,7 @@ export function calculateHourlyPerformance(trades = []) {
 
     hourMap[hour].netPnl += t.netPnl;
     hourMap[hour].trades += 1;
-    if (t.netPnl > 0) hourMap[hour].wins += 1;
+    if (getTradeStatus(t.netPnl) === 'WIN') hourMap[hour].wins += 1;
   }
 
   return Object.values(hourMap)
@@ -184,9 +216,6 @@ export function calculateHourlyPerformance(trades = []) {
     }));
 }
 
-/**
- * Finanzas y flujo de caja (inmune a variaciones operativas)
- */
 export function calculateEconomicStats(tradingPnl, transactions = []) {
   const COST_TYPES = new Set(['account_cost', 'reset_fee', 'activation_fee', 'platform_fee', 'other_expense']);
   let totalCosts = 0;
