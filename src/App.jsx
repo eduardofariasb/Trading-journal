@@ -24,6 +24,7 @@ import {
 import EconomicPerformance from './components/EconomicPerformance';
 import TradeEntryModal from './components/TradeEntryModal';
 import HourlyPerformanceChart from './components/HourlyPerformanceChart';
+import TradingCalendar from './components/TradingCalendar';
 
 const themeColors = {
   emerald: '#10B981',
@@ -677,42 +678,37 @@ export default function App() {
           </div>
 
           {/* Calendario Dinámico y Overtrading */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <Card className="lg:col-span-2 overflow-x-auto">
-              <div className="flex justify-between items-center mb-4">
-                <div>
-                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Trading Calendar</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">Operaciones registradas</p>
-                </div>
-              </div>
-              <div className="min-w-[550px]">
-                {chartData.length === 0 ? (
-                  <div className="py-12 text-center text-slate-400 text-xs">
-                    No hay operaciones registradas. Haz clic en "Registrar Trades" arriba para ingresar tus órdenes.
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-7 gap-2">
-                    {chartData.map(day => (
-                      <div 
-                        key={day.date} 
-                        className={`p-2.5 rounded-xl border flex flex-col justify-between h-20 ${day.pnl >= 0 ? 'bg-emerald-50/40 border-emerald-200' : 'bg-rose-50/40 border-rose-200'}`}
-                      >
-                        <div className="flex justify-between items-start">
-                          <span className="text-[10px] font-bold text-slate-600">{day.date.substring(5)}</span>
-                          <span className={`text-xs font-black ${day.pnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                            {day.pnl >= 0 ? `+$${day.pnl.toFixed(0)}` : `-$${Math.abs(day.pnl).toFixed(0)}`}
-                          </span>
-                        </div>
-                        <div className="flex justify-between text-[10px] text-slate-400 font-medium">
-                          <span>{day.trades} trds</span>
-                          <span>{day.winRate.toFixed(0)}% W</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </Card>
+<div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+  <div className="lg:col-span-2">
+    <TradingCalendar dailyData={dailyAggregated} />
+  </div>
+
+  <Card>
+    <CardTitle title="Overtrading Analysis" subtitle="Total Trades vs P&L" icon={TrendingUp} />
+    <div className="h-64">
+      {dailyAggregated.length === 0 ? (
+        <div className="h-full flex items-center justify-center text-xs text-slate-400">Sin datos de sobreoperativa</div>
+      ) : (
+        <ResponsiveContainer>
+          <ScatterChart margin={{ top: 10, right: 10, bottom: 20, left: -10 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
+            <XAxis type="number" dataKey="totalTrades" name="Trades" stroke="#94A3B8" fontSize={11} />
+            <YAxis type="number" dataKey="netPnl" name="P&L" stroke="#94A3B8" fontSize={11} tickFormatter={v => `$${v}`} />
+            <Tooltip cursor={{ strokeDasharray: '3 3' }} />
+            <Scatter data={dailyAggregated}>
+              {dailyAggregated.map((e, i) => (
+                <Cell 
+                  key={i} 
+                  fill={e.dayStatus === 'WIN' ? themeColors.emerald : e.dayStatus === 'LOSS' ? themeColors.coral : '#F59E0B'} 
+                />
+              ))}
+            </Scatter>
+          </ScatterChart>
+        </ResponsiveContainer>
+      )}
+    </div>
+  </Card>
+</div>
 
             <Card>
               <CardTitle title="Overtrading Analysis" subtitle="Total Trades vs P&L" icon={TrendingUp} />
