@@ -1,12 +1,21 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, ClipboardPaste, Upload, AlertCircle } from 'lucide-react';
 import { calculateTradeR } from '../utils/metrics';
 
-export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, accounts, activeAccountId }) {
+export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, accounts = [], activeAccountId }) {
   const [activeTab, setActiveTab] = useState('manual');
-  const [selectedAccount, setSelectedAccount] = useState(
-    activeAccountId !== 'all' ? activeAccountId : (accounts[0]?.accountId || '')
-  );
+  const [selectedAccount, setSelectedAccount] = useState('');
+
+  // Sincronización obligatoria al abrir el modal o cambiar de cuenta
+  useEffect(() => {
+    if (isOpen && accounts.length > 0) {
+      if (activeAccountId && activeAccountId !== 'all') {
+        setSelectedAccount(activeAccountId);
+      } else {
+        setSelectedAccount(accounts[0].accountId);
+      }
+    }
+  }, [isOpen, activeAccountId, accounts]);
 
   const [manualForm, setManualForm] = useState({
     symbol: 'NQ',
@@ -29,7 +38,8 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
 
   if (!isOpen) return null;
 
-  // Manejo de puntos y precio SL en el formulario manual
+  const targetAccountId = selectedAccount || accounts[0]?.accountId || 'acc_principal';
+
   const handleManualSlPointsChange = (ptsVal) => {
     const entry = Number(manualForm.entryPrice);
     if (!ptsVal || isNaN(ptsVal) || !entry) {
@@ -65,7 +75,7 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
     e.preventDefault();
     const trade = {
       ...manualForm,
-      accountId: selectedAccount,
+      accountId: targetAccountId,
       entryTime: `${manualForm.date} ${manualForm.entryTime}`,
       exitTime: `${manualForm.date} ${manualForm.exitTime}`,
       quantity: Number(manualForm.quantity) || 1,
@@ -114,7 +124,7 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
           slPoints,
           takeProfit: item.takeProfit ? Number(item.takeProfit) : null,
           netPnl: Number(item.netPnl ?? item.pnl ?? 0),
-          accountId: selectedAccount
+          accountId: targetAccountId
         };
 
         trade.rMultiple = trade.stopLoss !== '' ? calculateTradeR(trade) : null;
@@ -127,7 +137,6 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
     }
   };
 
-  // 1. Cuando el usuario escribe PUNTOS de Stop en la tabla
   const handleUpdateSlPoints = (index, pointsValue) => {
     setJsonPreview(prev => {
       const updated = [...prev];
@@ -150,7 +159,6 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
     });
   };
 
-  // 2. Cuando el usuario escribe el PRECIO exacto de Stop en la tabla
   const handleUpdatePriceSl = (index, priceValue) => {
     setJsonPreview(prev => {
       const updated = [...prev];
@@ -173,12 +181,16 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
   };
 
   const handleSaveImportedTrades = () => {
+    const finalAccountId = selectedAccount || accounts[0]?.accountId || 'acc_principal';
     const sanitizedTrades = jsonPreview.map(t => ({
       ...t,
+      accountId: finalAccountId,
       stopLoss: t.stopLoss === '' ? null : Number(t.stopLoss),
       rMultiple: t.rMultiple !== null ? Number(t.rMultiple) : null
     }));
     onSaveTrades(sanitizedTrades);
+    setJsonText('');
+    setJsonPreview([]);
     onClose();
   };
 
@@ -223,7 +235,7 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
           slPoints,
           takeProfit: row.takeprofit ? Number(row.takeprofit) : null,
           netPnl: Number(row.netpnl || row.pnl || 0),
-          accountId: selectedAccount
+          accountId: targetAccountId
         };
         trade.rMultiple = trade.stopLoss !== '' ? calculateTradeR(trade) : null;
         trades.push(trade);
@@ -247,11 +259,11 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
 
         <div className="px-6 pt-4 pb-2 bg-slate-50 border-b border-slate-100 flex flex-wrap justify-between items-center gap-3">
           <div className="flex items-center gap-2">
-            <span className="text-xs font-bold text-slate-500">Cuenta:</span>
+            <span className="text-xs font-bold text-slate-500">Destino:</span>
             <select 
-              value={selectedAccount} 
+              value={selectedAccount || (accounts[0]?.accountId || '')} 
               onChange={(e) => setSelectedAccount(e.target.value)}
-              className="text-xs font-semibold bg-white border border-slate-200 rounded-lg p-1.5 outline-none"
+              className="text-xs font-semibold bg-white border border-slate-200 rounded-lg p-1.5 outline-none text-slate-800"
             >
               {accounts.map(a => <option key={a.accountId} value={a.accountId}>{a.name}</option>)}
             </select>
@@ -391,7 +403,7 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
                   <div className="flex justify-between items-center">
                     <div>
                       <span className="text-xs font-bold text-slate-700">Trades detectados ({jsonPreview.length})</span>
-                      <p className="text-[11px] text-slate-400">Puedes escribir los puntos arriesgados (SL Pts) o el precio exacto.</p>
+                      <p className="text-[11px] text-slate-400">Se guardarán en: <strong className="text-slate-700">{accounts.find(a=>a.accountId===targetAccountId)?.name || targetAccountId}</strong></p>
                     </div>
                     <button 
                       type="button" 
@@ -425,8 +437,6 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
                             <td className={`p-2.5 font-bold ${t.direction === 'LONG' ? 'text-blue-600' : 'text-amber-600'}`}>{t.direction}</td>
                             <td className="p-2.5 font-mono text-slate-600">{t.entryPrice}</td>
                             <td className="p-2.5 font-mono text-slate-600">{t.exitPrice}</td>
-                            
-                            {/* Columna 1: Puntos arriesgados */}
                             <td className="p-1.5">
                               <input 
                                 type="number" 
@@ -437,8 +447,6 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
                                 className="w-full p-1.5 border border-slate-200 rounded-lg text-xs font-mono font-bold text-rose-600 focus:border-rose-400 outline-none bg-rose-50/30"
                               />
                             </td>
-
-                            {/* Columna 2: Precio resultante */}
                             <td className="p-1.5">
                               <input 
                                 type="number" 
@@ -449,7 +457,6 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
                                 className="w-full p-1.5 border border-slate-200 rounded-lg text-xs font-mono text-slate-700 focus:border-blue-400 outline-none"
                               />
                             </td>
-
                             <td className={`p-2.5 font-bold ${t.netPnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                               {t.netPnl >= 0 ? `+$${t.netPnl}` : `-$${Math.abs(t.netPnl)}`}
                             </td>
