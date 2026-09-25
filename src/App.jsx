@@ -121,11 +121,12 @@ const AccountConfigModal = ({ isOpen, onClose, currentAccount, onSave, onRename,
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (!isAll && name.trim() && name !== currentAccount.name) {
-      onRename(currentAccount.accountId, name.trim());
+    const finalName = name.trim() || 'Mi Cuenta';
+    if (!isAll && finalName !== currentAccount.name) {
+      onRename(currentAccount.accountId, finalName);
     }
     onSave(currentAccount.accountId, { 
-      name: isAll ? 'Consolidado General' : name.trim(),
+      name: isAll ? 'Vista Consolidada' : finalName,
       type, 
       targetProfit: Number(targetProfit) || 0, 
       purchaseDate, 
@@ -176,12 +177,18 @@ const AccountConfigModal = ({ isOpen, onClose, currentAccount, onSave, onRename,
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4 text-xs">
-          {!isAll && (
-            <div>
-              <label className="font-semibold block mb-1">Nombre de la Cuenta</label>
-              <input type="text" value={name} onChange={(e) => setName(e.target.value)} className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" required />
-            </div>
-          )}
+          <div>
+            <label className="font-semibold block mb-1">Nombre de la Cuenta</label>
+            <input 
+              type="text" 
+              value={name} 
+              onChange={(e) => setName(e.target.value)} 
+              disabled={isAll}
+              className={`w-full p-2 border rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none ${isAll ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-white'}`} 
+              placeholder={isAll ? "Vista consolidada de todas las cuentas" : "Ej: Apex 50K #1"} 
+              required={!isAll} 
+            />
+          </div>
 
           <div className="grid grid-cols-2 gap-2">
             <button type="button" onClick={() => setType('eval')} className={`py-2 px-3 rounded-lg font-bold border transition-all ${type === 'eval' ? 'bg-blue-50 border-blue-500 text-blue-700' : 'bg-white border-gray-200 text-slate-500'}`}>🎯 Evaluación</button>
@@ -262,7 +269,9 @@ const PropFirmTracker = ({ currentAccount, netPnl, onEditAccount }) => {
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-base font-bold text-slate-900">{isAll ? "Vista Consolidada" : `Cuenta: ${meta.name}`}</h2>
+              <h2 className="text-base font-bold text-slate-900">
+                {isAll ? "Vista Consolidada (Todas las cuentas)" : `Cuenta: ${meta.name || "Mi Cuenta"}`}
+              </h2>
               <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold uppercase ${isFunded ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
                 {isFunded ? "🏆 Fondeada" : "🎯 Evaluación"}
               </span>
@@ -270,7 +279,16 @@ const PropFirmTracker = ({ currentAccount, netPnl, onEditAccount }) => {
             <p className="text-xs text-slate-500 mt-0.5">Compra: {String(meta?.purchaseDate)} • Vence: {String(meta?.expirationDate)}</p>
           </div>
         </div>
-        <button onClick={onEditAccount} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 transition-colors">
+        <button 
+          onClick={onEditAccount} 
+          disabled={isAll}
+          title={isAll ? "Selecciona una cuenta en el menú superior para configurarla" : "Configurar cuenta"}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
+            isAll 
+              ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed' 
+              : 'border-slate-200 hover:bg-slate-50 text-slate-700'
+          }`}
+        >
           <Edit3 className="w-3.5 h-3.5 text-blue-600" /> Configurar Cuenta y Metas
         </button>
       </div>
@@ -382,7 +400,7 @@ export default function App() {
       const targetProfit = accounts.reduce((s, a) => s + (Number(a.targetProfit) || 0), 0);
       return {
         accountId: 'all',
-        name: 'Consolidado General',
+        name: 'Vista Consolidada',
         type: 'funded',
         targetProfit,
         accountCost: totalCosts,
@@ -395,20 +413,13 @@ export default function App() {
   }, [accounts, selectedAccountId]);
 
   const handleSaveAccount = async (accId, updatedData) => {
-    if (!user) return;
-    if (accId === 'all') {
-      const targetId = accounts[0]?.accountId;
-      if (targetId) {
-        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'accounts', targetId), updatedData, { merge: true });
-      }
-    } else {
-      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'accounts', accId), updatedData, { merge: true });
-    }
+    if (!user || accId === 'all') return;
+    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'accounts', accId), updatedData, { merge: true });
   };
 
   const handleRenameAccount = async (accId, newName) => {
-    if (!user || accId === 'all') return;
-    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'accounts', accId), { name: newName }, { merge: true });
+    if (!user || accId === 'all' || !newName.trim()) return;
+    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'accounts', accId), { name: newName.trim() }, { merge: true });
   };
 
   const handleDeleteAccount = async (accId) => {
@@ -449,7 +460,7 @@ export default function App() {
     const newId = `acc_${Date.now()}`;
     const newAccount = {
       accountId: newId,
-      name: `Nueva Cuenta #${accounts.length + 1}`,
+      name: `Cuenta #${accounts.length + 1}`,
       type: 'eval',
       targetProfit: 3000,
       purchaseDate: new Date().toISOString().split('T')[0],
@@ -539,7 +550,7 @@ export default function App() {
                 value={selectedAccountId} 
                 onChange={(e) => setSelectedAccountId(e.target.value)}
               >
-                <option value="all">Consolidado General</option>
+                <option value="all">Todas las Cuentas (Consolidado)</option>
                 {accounts.map(a => <option key={a.accountId} value={a.accountId}>{a.name}</option>)}
               </select>
             </div>
@@ -678,37 +689,10 @@ export default function App() {
           </div>
 
           {/* Calendario Dinámico y Overtrading */}
-<div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-  <div className="lg:col-span-2">
-    <TradingCalendar dailyData={dailyAggregated} />
-  </div>
-
-  <Card>
-    <CardTitle title="Overtrading Analysis" subtitle="Total Trades vs P&L" icon={TrendingUp} />
-    <div className="h-64">
-      {dailyAggregated.length === 0 ? (
-        <div className="h-full flex items-center justify-center text-xs text-slate-400">Sin datos de sobreoperativa</div>
-      ) : (
-        <ResponsiveContainer>
-          <ScatterChart margin={{ top: 10, right: 10, bottom: 20, left: -10 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-            <XAxis type="number" dataKey="totalTrades" name="Trades" stroke="#94A3B8" fontSize={11} />
-            <YAxis type="number" dataKey="netPnl" name="P&L" stroke="#94A3B8" fontSize={11} tickFormatter={v => `$${v}`} />
-            <Tooltip cursor={{ strokeDasharray: '3 3' }} />
-            <Scatter data={dailyAggregated}>
-              {dailyAggregated.map((e, i) => (
-                <Cell 
-                  key={i} 
-                  fill={e.dayStatus === 'WIN' ? themeColors.emerald : e.dayStatus === 'LOSS' ? themeColors.coral : '#F59E0B'} 
-                />
-              ))}
-            </Scatter>
-          </ScatterChart>
-        </ResponsiveContainer>
-      )}
-    </div>
-  </Card>
-</div>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="lg:col-span-2">
+              <TradingCalendar dailyData={dailyAggregated} />
+            </div>
 
             <Card>
               <CardTitle title="Overtrading Analysis" subtitle="Total Trades vs P&L" icon={TrendingUp} />
@@ -723,7 +707,12 @@ export default function App() {
                       <YAxis type="number" dataKey="netPnl" name="P&L" stroke="#94A3B8" fontSize={11} tickFormatter={v => `$${v}`} />
                       <Tooltip cursor={{ strokeDasharray: '3 3' }} />
                       <Scatter data={dailyAggregated}>
-                        {dailyAggregated.map((e, i) => <Cell key={i} fill={e.netPnl >= 0 ? themeColors.emerald : themeColors.coral} />)}
+                        {dailyAggregated.map((e, i) => (
+                          <Cell 
+                            key={i} 
+                            fill={e.dayStatus === 'WIN' ? themeColors.emerald : e.dayStatus === 'LOSS' ? themeColors.coral : '#F59E0B'} 
+                          />
+                        ))}
                       </Scatter>
                     </ScatterChart>
                   </ResponsiveContainer>
