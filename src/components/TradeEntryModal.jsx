@@ -18,6 +18,7 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
     entryPrice: '',
     exitPrice: '',
     stopLoss: '',
+    slPoints: '',
     takeProfit: '',
     netPnl: ''
   });
@@ -27,6 +28,38 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
   const [jsonError, setJsonError] = useState('');
 
   if (!isOpen) return null;
+
+  // Manejo de puntos y precio SL en el formulario manual
+  const handleManualSlPointsChange = (ptsVal) => {
+    const entry = Number(manualForm.entryPrice);
+    if (!ptsVal || isNaN(ptsVal) || !entry) {
+      setManualForm(prev => ({ ...prev, slPoints: ptsVal, stopLoss: '' }));
+      return;
+    }
+    const pts = Math.abs(Number(ptsVal));
+    const isLong = manualForm.direction === 'LONG';
+    const computedSl = isLong ? (entry - pts) : (entry + pts);
+    setManualForm(prev => ({
+      ...prev,
+      slPoints: ptsVal,
+      stopLoss: Number(computedSl.toFixed(2))
+    }));
+  };
+
+  const handleManualPriceSlChange = (priceVal) => {
+    const entry = Number(manualForm.entryPrice);
+    if (!priceVal || isNaN(priceVal) || !entry) {
+      setManualForm(prev => ({ ...prev, stopLoss: priceVal, slPoints: '' }));
+      return;
+    }
+    const sl = Number(priceVal);
+    const pts = Math.abs(entry - sl);
+    setManualForm(prev => ({
+      ...prev,
+      stopLoss: priceVal,
+      slPoints: Number(pts.toFixed(2))
+    }));
+  };
 
   const handleManualSubmit = (e) => {
     e.preventDefault();
@@ -38,7 +71,7 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
       quantity: Number(manualForm.quantity) || 1,
       entryPrice: Number(manualForm.entryPrice) || 0,
       exitPrice: Number(manualForm.exitPrice) || 0,
-      stopLoss: manualForm.stopLoss ? Number(manualForm.stopLoss) : null,
+      stopLoss: manualForm.stopLoss !== '' ? Number(manualForm.stopLoss) : null,
       takeProfit: manualForm.takeProfit ? Number(manualForm.takeProfit) : null,
       netPnl: Number(manualForm.netPnl) || 0,
     };
@@ -57,20 +90,33 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
 
       const formatted = rawList.map((item) => {
         const date = item.date || (item.entryTime ? item.entryTime.split(' ')[0] : new Date().toISOString().split('T')[0]);
+        const entryPrice = Number(item.entryPrice || item.entry || 0);
+        const exitPrice = Number(item.exitPrice || item.exit || 0);
+        const direction = (item.direction || item.side || 'LONG').toUpperCase();
+        
+        let stopLoss = item.stopLoss !== null && item.stopLoss !== undefined && item.stopLoss !== '' ? Number(item.stopLoss) : '';
+        let slPoints = '';
+
+        if (stopLoss !== '' && entryPrice) {
+          slPoints = Number(Math.abs(entryPrice - stopLoss).toFixed(2));
+        }
+
         const trade = {
           symbol: item.symbol || item.ticker || 'MNQ',
-          direction: (item.direction || item.side || 'LONG').toUpperCase(),
+          direction,
           date,
           entryTime: item.entryTime || `${date} 09:30`,
           exitTime: item.exitTime || `${date} 10:00`,
           quantity: Number(item.quantity || item.contracts || 1),
-          entryPrice: Number(item.entryPrice || item.entry || 0),
-          exitPrice: Number(item.exitPrice || item.exit || 0),
-          stopLoss: item.stopLoss !== null && item.stopLoss !== undefined && item.stopLoss !== '' ? Number(item.stopLoss) : '',
+          entryPrice,
+          exitPrice,
+          stopLoss,
+          slPoints,
           takeProfit: item.takeProfit ? Number(item.takeProfit) : null,
           netPnl: Number(item.netPnl ?? item.pnl ?? 0),
           accountId: selectedAccount
         };
+
         trade.rMultiple = trade.stopLoss !== '' ? calculateTradeR(trade) : null;
         return trade;
       });
@@ -81,20 +127,43 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
     }
   };
 
-  // Permite actualizar el Stop Loss trade por trade en la tabla interactiva
-  const handleUpdateStopLoss = (index, value) => {
+  // 1. Cuando el usuario escribe PUNTOS de Stop en la tabla
+  const handleUpdateSlPoints = (index, pointsValue) => {
     setJsonPreview(prev => {
       const updated = [...prev];
       const trade = { ...updated[index] };
-      const numericVal = value === '' ? '' : Number(value);
-      trade.stopLoss = numericVal;
+      trade.slPoints = pointsValue;
 
-      if (numericVal !== '' && !isNaN(numericVal)) {
-        trade.rMultiple = calculateTradeR({
-          ...trade,
-          stopLoss: numericVal
-        });
+      if (pointsValue !== '' && !isNaN(pointsValue) && trade.entryPrice) {
+        const pts = Math.abs(Number(pointsValue));
+        const isLong = trade.direction === 'LONG';
+        const computedSl = isLong ? (trade.entryPrice - pts) : (trade.entryPrice + pts);
+        trade.stopLoss = Number(computedSl.toFixed(2));
+        trade.rMultiple = calculateTradeR(trade);
       } else {
+        trade.stopLoss = '';
+        trade.rMultiple = null;
+      }
+
+      updated[index] = trade;
+      return updated;
+    });
+  };
+
+  // 2. Cuando el usuario escribe el PRECIO exacto de Stop en la tabla
+  const handleUpdatePriceSl = (index, priceValue) => {
+    setJsonPreview(prev => {
+      const updated = [...prev];
+      const trade = { ...updated[index] };
+      trade.stopLoss = priceValue;
+
+      if (priceValue !== '' && !isNaN(priceValue) && trade.entryPrice) {
+        const sl = Number(priceValue);
+        const pts = Math.abs(trade.entryPrice - sl);
+        trade.slPoints = Number(pts.toFixed(2));
+        trade.rMultiple = calculateTradeR({ ...trade, stopLoss: sl });
+      } else {
+        trade.slPoints = '';
         trade.rMultiple = null;
       }
 
@@ -132,6 +201,15 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
         headers.forEach((h, idx) => row[h] = values[idx]);
 
         const date = row.date || new Date().toISOString().split('T')[0];
+        const entryPrice = Number(row.entryprice || row.entry || 0);
+        const exitPrice = Number(row.exitprice || row.exit || 0);
+        let stopLoss = row.stoploss ? Number(row.stoploss) : '';
+        let slPoints = '';
+
+        if (stopLoss !== '' && entryPrice) {
+          slPoints = Number(Math.abs(entryPrice - stopLoss).toFixed(2));
+        }
+
         const trade = {
           symbol: row.symbol || row.ticker || 'MNQ',
           direction: (row.direction || row.side || 'LONG').toUpperCase(),
@@ -139,9 +217,10 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
           entryTime: row.entrytime || `${date} 09:30`,
           exitTime: row.exittime || `${date} 10:00`,
           quantity: Number(row.quantity || row.qty || 1),
-          entryPrice: Number(row.entryprice || row.entry || 0),
-          exitPrice: Number(row.exitprice || row.exit || 0),
-          stopLoss: row.stoploss ? Number(row.stoploss) : '',
+          entryPrice,
+          exitPrice,
+          stopLoss,
+          slPoints,
           takeProfit: row.takeprofit ? Number(row.takeprofit) : null,
           netPnl: Number(row.netpnl || row.pnl || 0),
           accountId: selectedAccount
@@ -157,7 +236,7 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
 
   return (
     <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl overflow-hidden border border-slate-100 flex flex-col max-h-[90vh]">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl overflow-hidden border border-slate-100 flex flex-col max-h-[90vh]">
         <div className="flex justify-between items-center px-6 py-4 border-b border-slate-100">
           <div>
             <h2 className="text-base font-bold text-slate-800">Registrar Operaciones Individuales</h2>
@@ -250,10 +329,28 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-4 gap-3">
                 <div>
-                  <label className="font-semibold block mb-1 text-slate-500">Stop Loss Inicial</label>
-                  <input type="number" step="any" value={manualForm.stopLoss} onChange={e => setManualForm({ ...manualForm, stopLoss: e.target.value })} className="w-full p-2 border rounded-lg text-rose-600 font-mono" placeholder="Para ratio R" />
+                  <label className="font-semibold block mb-1 text-slate-600">SL en Puntos (pts)</label>
+                  <input 
+                    type="number" 
+                    step="any" 
+                    value={manualForm.slPoints} 
+                    onChange={e => handleManualSlPointsChange(e.target.value)} 
+                    className="w-full p-2 border rounded-lg font-mono text-rose-600 font-bold" 
+                    placeholder="Ej: 20" 
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold block mb-1 text-slate-500">Precio Stop Loss</label>
+                  <input 
+                    type="number" 
+                    step="any" 
+                    value={manualForm.stopLoss} 
+                    onChange={e => handleManualPriceSlChange(e.target.value)} 
+                    className="w-full p-2 border rounded-lg text-rose-600 font-mono" 
+                    placeholder="Calculado auto" 
+                  />
                 </div>
                 <div>
                   <label className="font-semibold block mb-1 text-slate-500">Take Profit</label>
@@ -294,7 +391,7 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
                   <div className="flex justify-between items-center">
                     <div>
                       <span className="text-xs font-bold text-slate-700">Trades detectados ({jsonPreview.length})</span>
-                      <p className="text-[11px] text-slate-400">Ingresa el Stop Loss para calcular el ratio R de cada orden.</p>
+                      <p className="text-[11px] text-slate-400">Puedes escribir los puntos arriesgados (SL Pts) o el precio exacto.</p>
                     </div>
                     <button 
                       type="button" 
@@ -314,7 +411,8 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
                           <th className="p-2.5 font-semibold">L/S</th>
                           <th className="p-2.5 font-semibold">Entrada</th>
                           <th className="p-2.5 font-semibold">Salida</th>
-                          <th className="p-2.5 font-semibold w-28">Stop Loss</th>
+                          <th className="p-2.5 font-semibold w-24">SL (Pts)</th>
+                          <th className="p-2.5 font-semibold w-28">Precio SL</th>
                           <th className="p-2.5 font-semibold">P&L</th>
                           <th className="p-2.5 font-semibold">R</th>
                         </tr>
@@ -327,16 +425,31 @@ export default function TradeEntryModal({ isOpen, onClose, onSaveTrades, account
                             <td className={`p-2.5 font-bold ${t.direction === 'LONG' ? 'text-blue-600' : 'text-amber-600'}`}>{t.direction}</td>
                             <td className="p-2.5 font-mono text-slate-600">{t.entryPrice}</td>
                             <td className="p-2.5 font-mono text-slate-600">{t.exitPrice}</td>
+                            
+                            {/* Columna 1: Puntos arriesgados */}
+                            <td className="p-1.5">
+                              <input 
+                                type="number" 
+                                step="any"
+                                value={t.slPoints}
+                                onChange={(e) => handleUpdateSlPoints(idx, e.target.value)}
+                                placeholder="Pts"
+                                className="w-full p-1.5 border border-slate-200 rounded-lg text-xs font-mono font-bold text-rose-600 focus:border-rose-400 outline-none bg-rose-50/30"
+                              />
+                            </td>
+
+                            {/* Columna 2: Precio resultante */}
                             <td className="p-1.5">
                               <input 
                                 type="number" 
                                 step="any"
                                 value={t.stopLoss}
-                                onChange={(e) => handleUpdateStopLoss(idx, e.target.value)}
+                                onChange={(e) => handleUpdatePriceSl(idx, e.target.value)}
                                 placeholder="Precio SL"
-                                className="w-full p-1.5 border border-slate-200 rounded-lg text-xs font-mono text-rose-600 focus:border-rose-400 outline-none"
+                                className="w-full p-1.5 border border-slate-200 rounded-lg text-xs font-mono text-slate-700 focus:border-blue-400 outline-none"
                               />
                             </td>
+
                             <td className={`p-2.5 font-bold ${t.netPnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                               {t.netPnl >= 0 ? `+$${t.netPnl}` : `-$${Math.abs(t.netPnl)}`}
                             </td>
