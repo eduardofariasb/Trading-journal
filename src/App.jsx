@@ -1,43 +1,30 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { 
-  LineChart, Line, BarChart, Bar, AreaChart, Area, RadarChart, PolarGrid, 
-  PolarAngleAxis, PolarRadiusAxis, Radar, ScatterChart, Scatter, XAxis, YAxis, 
-  CartesianGrid, Tooltip, ResponsiveContainer, Cell
+  BarChart, Bar, AreaChart, Area, XAxis, YAxis, 
+  CartesianGrid, Tooltip, ResponsiveContainer, Cell,
+  ScatterChart, Scatter
 } from 'recharts';
 import { 
   ArrowUpRight, Activity, Target, TrendingUp, 
-  CalendarDays, Upload, X, Image as ImageIcon, Loader2, CheckCircle2,
-  ChevronLeft, ChevronRight, Calendar, Settings, Trash2, KeyRound, Database,
+  CalendarDays, CheckCircle2, Calendar, 
   Wallet, DollarSign, Award, CalendarClock, Edit3, ShieldCheck, Sparkles,
-  BarChart2, ClipboardPaste, Copy, FileText
+  BarChart2, AlertTriangle, PlusCircle, Clock, X
 } from 'lucide-react';
+import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { doc, collection, onSnapshot, setDoc, writeBatch, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
 
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, doc, collection, onSnapshot, addDoc, setDoc, deleteDoc } from 'firebase/firestore';
+import { auth, db, appId } from './services/firebaseConfig';
+import { 
+  calculateTradingStats, 
+  calculateEconomicStats, 
+  aggregateTradesToDaily, 
+  calculateHourlyPerformance 
+} from './utils/metrics';
 
-const projectFirebaseConfig = {
-  apiKey: "AIzaSyD1ULw8t4rIbyOjcGdjXPWt560Vb0fS5-M",
-  authDomain: "dashboard-calendar-86678.firebaseapp.com",
-  projectId: "dashboard-calendar-86678",
-  storageBucket: "dashboard-calendar-86678.firebasestorage.app",
-  messagingSenderId: "508631874357",
-  appId: "1:508631874357:web:de5805c75985b563c1ea7c",
-  measurementId: "G-R2PY7YEL19"
-};
-
-const storedCustomConfig = typeof window !== 'undefined' ? window.localStorage?.getItem('custom_firebase_config') : null;
-const activeFirebaseConfig = storedCustomConfig ? JSON.parse(storedCustomConfig) : projectFirebaseConfig;
-
-const app = initializeApp(activeFirebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-
-// Sanitize appId so slashes from file paths (__app_id) don't create extra Firestore path segments
-const rawAppId = typeof __app_id !== 'undefined' && __app_id ? __app_id : 'trading-journal-prod';
-const appId = String(rawAppId).replace(/[^a-zA-Z0-9_-]/g, '_');
-
-const DashboardContext = React.createContext({});
+import EconomicPerformance from './components/EconomicPerformance';
+import TradeEntryModal from './components/TradeEntryModal';
+import HourlyPerformanceChart from './components/HourlyPerformanceChart';
+import TradingCalendar from './components/TradingCalendar';
 
 const themeColors = {
   emerald: '#10B981',
@@ -46,637 +33,235 @@ const themeColors = {
   lightGray: '#F3F4F6'
 };
 
-const defaultDailyPnLData = [
-  { day: '1', date: '2026-09-01', pnl: 250, cumulative: 250, trades: 4, winRate: 75, account: 'Cuenta Principal' },
-  { day: '2', date: '2026-09-02', pnl: -120, cumulative: 130, trades: 3, winRate: 33, account: 'Cuenta Principal' },
-  { day: '3', date: '2026-09-03', pnl: 400, cumulative: 530, trades: 5, winRate: 80, account: 'Cuenta Principal' },
-];
-
-const radarData = [
-  { subject: 'Disciplina', score: 85, fullMark: 100 },
-  { subject: 'Entrada', score: 70, fullMark: 100 },
-  { subject: 'Salida', score: 92, fullMark: 100 },
-  { subject: 'Gestión Riesgo', score: 95, fullMark: 100 },
-  { subject: 'Paciencia', score: 78, fullMark: 100 },
-];
-
-const GEMINI_COPY_PROMPT = `Actúa como extractor de métricas de trading. Extrae de esta captura los datos y responde ÚNICAMENTE con este formato JSON:
-{
-  "date": "YYYY-MM-DD",
-  "netPnl": 0.00,
-  "totalTrades": 0,
-  "winRate": 0,
-  "avgWin": 0.00,
-  "avgLoss": 0.00
-}`;
-
-const parsePastedTradingData = (text) => {
-  if (!text || typeof text !== 'string') return null;
-
-  // 1. Intentar extraer objeto JSON directamente o dentro de bloques ```json ... ```
-  try {
-    const jsonMatch = text.match(/\{[\s\S]*?\}/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
-      if (parsed && typeof parsed === 'object') {
-        const todayStr = new Date().toISOString().split('T')[0];
-        return {
-          date: parsed.date || todayStr,
-          netPnl: Number(parsed.netPnl ?? parsed.pnl ?? parsed.net_pnl ?? 0),
-          totalTrades: parseInt(parsed.totalTrades ?? parsed.trades ?? parsed.total_trades ?? 0, 10),
-          winRate: Number(parsed.winRate ?? parsed.win_rate ?? parsed.winrate ?? 0),
-          avgWin: Number(parsed.avgWin ?? parsed.avg_win ?? 0),
-          avgLoss: Number(parsed.avgLoss ?? parsed.avg_loss ?? 0)
-        };
-      }
-    }
-  } catch {
-    // Si falla el parseo estricto de JSON, continúa con análisis de texto por expresiones regulares
-  }
-
-  // 2. Extractor de respaldo para texto plano copiado
-  const extractNum = (regex) => {
-    const m = text.match(regex);
-    if (!m) return null;
-    const clean = m[1].replace(/\$/g, '').replace(/,/g, '').trim();
-    const val = parseFloat(clean);
-    return isNaN(val) ? null : val;
-  };
-
-  const todayStr = new Date().toISOString().split('T')[0];
-  const dateMatch = text.match(/(\d{4}-\d{2}-\d{2})/) || text.match(/(\d{2}\/\d{2}\/\d{4})/);
-  let extractedDate = todayStr;
-  if (dateMatch) {
-    if (dateMatch[1].includes('/')) {
-      const [d, m, y] = dateMatch[1].split('/');
-      extractedDate = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
-    } else {
-      extractedDate = dateMatch[1];
-    }
-  }
-
-  const netPnl = extractNum(/(?:net\s*pnl|pnl\s*neto|resultado|profit|net\s*profit|ganancia\s*neta)[\s:=]+([+-]?\$?[\d,.-]+)/i) ?? 0;
-  const totalTrades = Math.round(extractNum(/(?:total\s*trades|trades|operaciones|total\s*operaciones)[\s:=]+(\d+)/i) ?? 0);
-  const winRate = extractNum(/(?:win\s*rate|tasa\s*de\s*acierto|winning\s*%|efectividad)[\s:=]+([\d,.-]+)/i) ?? 0;
-  const avgWin = extractNum(/(?:avg\s*win|ganancia\s*promedio|average\s*win)[\s:=]+([+-]?\$?[\d,.-]+)/i) ?? 0;
-  const avgLoss = extractNum(/(?:avg\s*loss|p[eé]rdida\s*promedio|average\s*loss)[\s:=]+([+-]?\$?[\d,.-]+)/i) ?? 0;
-
-  return {
-    date: extractedDate,
-    netPnl,
-    totalTrades,
-    winRate,
-    avgWin,
-    avgLoss
-  };
-};
-
-const analyzeScreenshot = async (base64Data, customApiKey = "") => {
-  const apiKey = customApiKey || (typeof window !== 'undefined' ? window.localStorage?.getItem('gemini_api_key') : "") || "";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-  
-  const payload = {
-    contents: [{
-      role: "user",
-      parts: [
-        { text: "Act as an expert trading data extractor. I am providing a screenshot of a trading platform daily summary (like NinjaTrader or Tradovate). Extract the following metrics:\n1. Date (format as YYYY-MM-DD. If year is missing, assume current year 2026).\n2. Net PnL (Net profit/loss, usually a green or red number after fees. If only Gross PnL and Fees are visible, calculate Net PnL = Gross + Fees).\n3. Total Trades.\n4. Winning Trade %.\n5. Avg. Winning Trade.\n6. Avg. Losing Trade.\n\nReturn strictly a JSON object matching this schema exactly. Remove currency symbols and % signs, keep only numbers." },
-        { inlineData: { mimeType: "image/png", data: base64Data.split(',')[1] } }
-      ]
-    }],
-    generationConfig: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: "OBJECT",
-        properties: {
-          date: { type: "STRING", description: "YYYY-MM-DD format" },
-          netPnl: { type: "NUMBER" },
-          totalTrades: { type: "INTEGER" },
-          winRate: { type: "NUMBER" },
-          avgWin: { type: "NUMBER" },
-          avgLoss: { type: "NUMBER" }
-        },
-        required: ["date", "netPnl", "totalTrades", "winRate", "avgWin", "avgLoss"]
-      }
-    }
-  };
-
-  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-  const data = await res.json();
-  if (!data.candidates || data.candidates.length === 0) throw new Error("Could not extract data");
-  return JSON.parse(data.candidates[0].content.parts[0].text);
-};
-
-const UploadModal = ({ isOpen, onClose, onSave, userId, existingAccounts = [] }) => {
-  const [activeTab, setActiveTab] = useState('paste'); // 'paste' | 'upload'
-  const [file, setFile] = useState(null);
-  const [preview, setPreview] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [formData, setFormData] = useState(null);
-  const [pastedText, setPastedText] = useState('');
-  const [promptCopied, setPromptCopied] = useState(false);
-  const [accountName, setAccountName] = useState('Cuenta Principal');
-  const [customAccountInput, setCustomAccountInput] = useState('');
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    if (isOpen) {
-      setError(null);
-    }
-  }, [isOpen]);
-
-  if (!isOpen) return null;
-
-  const handleFileSelect = (e) => {
-    const selected = e.target.files[0];
-    if (selected) {
-      setFile(selected);
-      setFormData(null);
-      setError(null);
-      const reader = new FileReader();
-      reader.onloadend = () => setPreview(reader.result);
-      reader.readAsDataURL(selected);
-    }
-  };
-
-  const handleAnalyze = async () => {
-    if (!preview) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await analyzeScreenshot(preview);
-      setFormData(data);
-    } catch (err) {
-      console.error(err);
-      setError("Fallo al analizar la imagen por API. Te recomendamos usar la pestaña 'Pegar Datos' para procesar gratis y sin límites en Gemini Web.");
-    }
-    setLoading(false);
-  };
-
-  const handleProcessPastedText = (textToProcess) => {
-    const text = textToProcess || pastedText;
-    if (!text || !text.trim()) {
-      setError("El texto a procesar está vacío. Pega la respuesta de Gemini primero.");
-      return;
-    }
-    setError(null);
-    const parsed = parsePastedTradingData(text);
-    if (parsed) {
-      setFormData(parsed);
-    } else {
-      setError("No se pudieron interpretar los datos. Puedes usar la opción de llenado manual abajo.");
-    }
-  };
-
-  const handleReadClipboard = async () => {
-    try {
-      if (!navigator.clipboard?.readText) {
-        setError("Tu navegador no permite leer el portapapeles directamente. Pega el texto manualmente en el recuadro.");
-        return;
-      }
-      const text = await navigator.clipboard.readText();
-      if (!text || !text.trim()) {
-        setError("El portapapeles está vacío. Copia el resultado de Gemini antes de presionar este botón.");
-        return;
-      }
-      setPastedText(text);
-      handleProcessPastedText(text);
-    } catch {
-      setError("Permiso del portapapeles denegado. Pega el texto con Ctrl + V en el recuadro.");
-    }
-  };
-
-  const handleStartBlank = () => {
-    const todayStr = new Date().toISOString().split('T')[0];
-    setFormData({
-      date: todayStr,
-      netPnl: 0,
-      totalTrades: 1,
-      winRate: 100,
-      avgWin: 0,
-      avgLoss: 0
-    });
-    setError(null);
-  };
-
-  const handleCopyPrompt = async () => {
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(GEMINI_COPY_PROMPT);
-      }
-      setPromptCopied(true);
-      setTimeout(() => setPromptCopied(false), 2500);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const handleSave = async () => {
-    if (!formData || !userId) return;
-    const finalAccount = accountName === 'NEW' ? (customAccountInput.trim() || 'Cuenta Principal') : accountName;
-    try {
-      setLoading(true);
-      const collectionRef = collection(db, 'artifacts', appId, 'users', userId, 'trading_days');
-      await addDoc(collectionRef, {
-        ...formData,
-        account: finalAccount,
-        createdAt: new Date().toISOString()
-      });
-      setFormData(null);
-      setPastedText('');
-      setPreview(null);
-      onSave();
-    } catch(err) {
-      console.error("Save error:", err);
-      setError("No se pudo guardar en la base de datos.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[92vh]">
-        
-        {/* Modal Header */}
-        <div className="p-4 border-b flex justify-between items-center bg-slate-50">
-          <div className="flex items-center gap-2">
-            <div className="p-1.5 bg-emerald-100 text-emerald-700 rounded-lg">
-              <ClipboardPaste className="w-4 h-4" />
-            </div>
-            <h2 className="font-bold text-slate-800 text-sm">
-              Registrar Sesión de Trading
-            </h2>
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Tab Selector if no form is currently loaded */}
-        {!formData && (
-          <div className="flex border-b bg-slate-100/70 p-1 text-xs font-semibold">
-            <button
-              onClick={() => { setActiveTab('paste'); setError(null); }}
-              className={`flex-1 py-2 rounded-lg flex items-center justify-center gap-1.5 transition-all ${
-                activeTab === 'paste' 
-                  ? 'bg-white text-slate-900 shadow-2xs font-bold' 
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <ClipboardPaste className="w-3.5 h-3.5 text-blue-600" />
-              Pegar Datos de Gemini (Recomendado)
-            </button>
-            <button
-              onClick={() => { setActiveTab('upload'); setError(null); }}
-              className={`flex-1 py-2 rounded-lg flex items-center justify-center gap-1.5 transition-all ${
-                activeTab === 'upload' 
-                  ? 'bg-white text-slate-900 shadow-2xs font-bold' 
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <ImageIcon className="w-3.5 h-3.5 text-emerald-600" />
-              Subir Imagen (Vía API)
-            </button>
-          </div>
-        )}
-        
-        <div className="p-6 overflow-y-auto flex-1">
-          {error && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-100 rounded-lg text-xs text-red-600">
-              {error}
-            </div>
-          )}
-
-          {/* TAB 1: PASTE / MANUAL MODE */}
-          {!formData && activeTab === 'paste' && (
-            <div className="space-y-4">
-              <div className="p-3.5 bg-blue-50/60 border border-blue-100 rounded-xl space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-blue-900 flex items-center gap-1.5">
-                    <Sparkles className="w-3.5 h-3.5 text-blue-600" /> ¿Cómo funciona este método?
-                  </span>
-                  <button
-                    type="button"
-                    onClick={handleCopyPrompt}
-                    className="flex items-center gap-1 text-[11px] px-2.5 py-1 bg-white border border-blue-200 text-blue-700 rounded-md font-semibold hover:bg-blue-50 shadow-2xs transition-colors"
-                  >
-                    <Copy className="w-3 h-3" />
-                    {promptCopied ? "¡Prompt Copiado!" : "Copiar Prompt para Gemini"}
-                  </button>
-                </div>
-                <p className="text-[11px] text-blue-800 leading-relaxed">
-                  1. Abre <strong>Gemini Web</strong> (gemini.google.com), sube tu captura y pégale el prompt copiado.<br/>
-                  2. Copia la respuesta generada por Gemini.<br/>
-                  3. Presiona el botón verde abajo para autocompletar tu formulario al instante.
-                </p>
-              </div>
-
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={handleReadClipboard}
-                  className="flex-1 py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs shadow-xs transition-all flex items-center justify-center gap-2"
-                >
-                  <ClipboardPaste className="w-4 h-4" />
-                  Pegar del Portapapeles y Autocompletar
-                </button>
-              </div>
-
-              <div className="relative">
-                <label className="text-[11px] font-semibold text-slate-600 block mb-1">
-                  O pega manualmente el texto/JSON aquí:
-                </label>
-                <textarea
-                  rows={4}
-                  value={pastedText}
-                  onChange={(e) => setPastedText(e.target.value)}
-                  placeholder={`Pega aquí el resultado de Gemini...\nEjemplo:\n{\n  "date": "2026-09-14",\n  "netPnl": 350,\n  "totalTrades": 4,\n  "winRate": 75\n}`}
-                  className="w-full p-3 border border-slate-200 rounded-xl text-xs font-mono focus:ring-2 focus:ring-blue-500 outline-none resize-none bg-slate-50/50"
-                />
-                {pastedText.trim() && (
-                  <button
-                    type="button"
-                    onClick={() => handleProcessPastedText()}
-                    className="mt-2 w-full py-2 bg-slate-800 hover:bg-slate-900 text-white font-semibold rounded-lg text-xs transition-colors"
-                  >
-                    Interpretar y Llenar Formulario
-                  </button>
-                )}
-              </div>
-
-              <div className="pt-2 border-t border-slate-100 text-center">
-                <button
-                  type="button"
-                  onClick={handleStartBlank}
-                  className="text-xs text-slate-500 hover:text-slate-800 font-semibold underline underline-offset-2 flex items-center justify-center gap-1 mx-auto"
-                >
-                  <FileText className="w-3.5 h-3.5" />
-                  Prefiero escribir los números manualmente en blanco
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 2: IMAGE UPLOAD MODE (DIRECT API) */}
-          {!formData && activeTab === 'upload' && (
-            <div className="space-y-4">
-              {!preview ? (
-                <div className="border-2 border-dashed border-gray-200 rounded-xl p-8 flex flex-col items-center justify-center text-center hover:bg-gray-50 transition-colors relative">
-                  <input type="file" accept="image/*" onChange={handleFileSelect} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
-                  <ImageIcon className="w-10 h-10 text-gray-300 mb-3" />
-                  <p className="text-sm font-medium text-gray-700">Haz clic o arrastra tu captura aquí</p>
-                  <p className="text-xs text-gray-400 mt-1">Soporta PNG, JPG</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="relative rounded-lg overflow-hidden border">
-                    <img src={preview} alt="Preview" className="w-full h-auto object-contain max-h-48" />
-                    <button onClick={() => {setPreview(null); setFormData(null);}} className="absolute top-2 right-2 bg-slate-900/60 p-1.5 rounded-full text-white hover:bg-slate-900/80">
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  {!loading && (
-                    <button onClick={handleAnalyze} className="w-full py-3 bg-emerald-500 text-white rounded-lg font-medium hover:bg-emerald-600 flex items-center justify-center gap-2">
-                      <span>Analizar con Inteligencia Artificial</span>
-                    </button>
-                  )}
-
-                  {loading && (
-                    <div className="flex flex-col items-center justify-center py-6 text-emerald-600">
-                      <Loader2 className="w-8 h-8 animate-spin mb-2" />
-                      <p className="text-sm font-medium">Procesando imagen con Gemini...</p>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* ACTIVE FORM: REVIEW & ASSIGN ACCOUNT */}
-          {formData && (
-            <div className="bg-emerald-50/30 border border-emerald-100 rounded-xl p-4 space-y-3">
-              <div className="flex justify-between items-center">
-                <h4 className="text-xs font-bold text-emerald-800 uppercase tracking-wide flex items-center gap-1">
-                  <CheckCircle2 className="w-4 h-4" /> Revisa y asigna cuenta
-                </h4>
-                <button
-                  type="button"
-                  onClick={() => { setFormData(null); setError(null); }}
-                  className="text-[11px] text-slate-400 hover:text-slate-700 underline"
-                >
-                  Volver a pegar / cambiar
-                </button>
-              </div>
-              
-              <div className="bg-white p-3 rounded-lg border border-gray-200">
-                <label className="text-xs font-semibold text-gray-700 flex items-center gap-1.5 mb-1.5">
-                  <Wallet className="w-3.5 h-3.5 text-blue-500" /> Cuenta de Trading
-                </label>
-                <select
-                  value={accountName}
-                  onChange={(e) => setAccountName(e.target.value)}
-                  className="w-full p-2 border border-gray-200 rounded-md text-xs font-medium focus:ring-2 focus:ring-emerald-500 outline-none"
-                >
-                  <option value="Cuenta Principal">Cuenta Principal</option>
-                  {existingAccounts.filter(a => a !== 'Cuenta Principal').map(acc => (
-                    <option key={acc} value={acc}>{acc}</option>
-                  ))}
-                  <option value="NEW">+ Agregar nueva cuenta...</option>
-                </select>
-
-                {accountName === 'NEW' && (
-                  <input
-                    type="text"
-                    placeholder="Ej. Apex 50k #1, Topstep 100k, Personal..."
-                    value={customAccountInput}
-                    onChange={(e) => setCustomAccountInput(e.target.value)}
-                    className="mt-2 w-full p-2 border border-blue-200 rounded-md text-xs focus:ring-2 focus:ring-blue-500 outline-none"
-                    autoFocus
-                  />
-                )}
-              </div>
-
-              <div className="grid grid-cols-2 gap-3 text-sm">
-                <div className="flex flex-col">
-                  <span className="text-gray-600 text-xs mb-1 font-medium">Fecha</span>
-                  <input 
-                    type="date" 
-                    className="p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white" 
-                    value={formData.date || ''} 
-                    onChange={e => setFormData({...formData, date: e.target.value})} 
-                  />
-                </div>
-                <div className="flex flex-col">
-                  <span className="text-gray-600 text-xs mb-1 font-medium">Net P&L ($)</span>
-                  <input 
-                    type="number" step="0.01" 
-                    className={`p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white font-semibold ${formData.netPnl >= 0 ? 'text-emerald-600' : 'text-red-500'}`} 
-                    value={formData.netPnl || 0} 
-                    onChange={e => setFormData({...formData, netPnl: parseFloat(e.target.value) || 0})} 
-                  />
-                </div>
-                <div className="flex flex-col">
-                  <span className="text-gray-600 text-xs mb-1 font-medium">Total Trades</span>
-                  <input 
-                    type="number" 
-                    className="p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white" 
-                    value={formData.totalTrades || 0} 
-                    onChange={e => setFormData({...formData, totalTrades: parseInt(e.target.value) || 0})} 
-                  />
-                </div>
-                <div className="flex flex-col">
-                  <span className="text-gray-600 text-xs mb-1 font-medium">Win Rate (%)</span>
-                  <input 
-                    type="number" step="0.1" 
-                    className="p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white" 
-                    value={formData.winRate || 0} 
-                    onChange={e => setFormData({...formData, winRate: parseFloat(e.target.value) || 0})} 
-                  />
-                </div>
-                <div className="flex flex-col">
-                  <span className="text-gray-600 text-xs mb-1 font-medium">Avg Win ($)</span>
-                  <input 
-                    type="number" step="0.01" 
-                    className="p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white text-emerald-600" 
-                    value={formData.avgWin || 0} 
-                    onChange={e => setFormData({...formData, avgWin: parseFloat(e.target.value) || 0})} 
-                  />
-                </div>
-                <div className="flex flex-col">
-                  <span className="text-gray-600 text-xs mb-1 font-medium">Avg Loss ($)</span>
-                  <input 
-                    type="number" step="0.01" 
-                    className="p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white text-red-500" 
-                    value={formData.avgLoss || 0} 
-                    onChange={e => setFormData({...formData, avgLoss: parseFloat(e.target.value) || 0})} 
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-        
-        {formData && (
-          <div className="p-4 border-t bg-gray-50 flex justify-end gap-2">
-            <button onClick={() => {setPreview(null); setFormData(null);}} className="px-4 py-2 text-gray-500 hover:text-gray-700 text-sm font-medium transition-colors">
-              Cancelar
-            </button>
-            <button onClick={handleSave} disabled={loading} className="px-5 py-2 bg-slate-800 text-white rounded-lg text-sm font-medium hover:bg-slate-900 transition-colors disabled:opacity-50 flex items-center gap-2">
-              {loading && <Loader2 className="w-4 h-4 animate-spin" />}
-              Guardar en el Journal
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
 const Card = ({ children, className = "" }) => (
-  <div className={`bg-white rounded-xl shadow-sm border border-gray-100 p-5 ${className}`}>
+  <div className={`bg-white rounded-xl shadow-sm border border-slate-100 p-5 ${className}`}>
     {children}
   </div>
 );
 
-const CardTitle = ({ title, subtitle, icon: Icon }) => {
-  const renderIcon = () => {
-    if (!Icon) return null;
-    if (React.isValidElement(Icon)) return Icon;
-    if (typeof Icon === 'function' || (typeof Icon === 'object' && Icon !== null)) {
-      const IconComp = Icon;
-      return <IconComp className="w-4 h-4 text-gray-400" />;
-    }
-    return null;
-  };
-
-  return (
-    <div className="flex items-center justify-between mb-3">
-      <div>
-        <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">{title}</h3>
-        {subtitle && <p className="text-xs text-gray-400 mt-0.5">{subtitle}</p>}
-      </div>
-      {renderIcon()}
+const CardTitle = ({ title, subtitle, icon: Icon }) => (
+  <div className="flex items-center justify-between mb-3">
+    <div>
+      <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">{title}</h3>
+      {subtitle && <p className="text-xs text-slate-400 mt-0.5">{subtitle}</p>}
     </div>
-  );
-};
+    {Icon && <Icon className="w-4 h-4 text-slate-400" />}
+  </div>
+);
 
 const SemiCircleGauge = ({ value, max, label, prefix = "", suffix = "", color = themeColors.emerald }) => {
-  const percentage = Math.min((value / max) * 100, 100);
-  const radius = 36;
-  const circumference = Math.PI * radius;
-  const strokeDashoffset = circumference - (percentage / 100) * circumference;
+  const percentage = isNaN(value) ? 0 : Math.min((value / max) * 100, 100);
+  const strokeDashoffset = (Math.PI * 36) - (percentage / 100) * (Math.PI * 36);
 
   return (
     <div className="flex flex-col items-center justify-center relative h-24">
       <svg width="100" height="55" viewBox="0 0 100 55" className="overflow-visible">
         <path d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke={themeColors.lightGray} strokeWidth="10" strokeLinecap="round" />
-        <path d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke={color} strokeWidth="10" strokeLinecap="round" strokeDasharray={circumference} strokeDashoffset={strokeDashoffset} className="transition-all duration-1000 ease-out" />
+        <path d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke={color} strokeWidth="10" strokeLinecap="round" strokeDasharray={Math.PI * 36} strokeDashoffset={strokeDashoffset} className="transition-all duration-1000 ease-out" />
       </svg>
       <div className="absolute bottom-1 text-center flex flex-col items-center">
-        <span className="text-xl font-bold text-gray-800">{prefix}{value}{suffix}</span>
-        <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wide">{label}</span>
+        <span className="text-xl font-bold text-slate-800">{prefix}{value}{suffix}</span>
+        <span className="text-[10px] font-medium text-slate-400 uppercase tracking-wide">{label}</span>
       </div>
     </div>
   );
 };
 
+// Validación segura de fechas para evitar NaN
 const getRemainingTradingDays = (targetDateStr) => {
-  if (!targetDateStr || typeof targetDateStr !== 'string') return 0;
+  if (!targetDateStr || typeof targetDateStr !== 'string' || !targetDateStr.includes('-')) return 0;
   const parts = targetDateStr.split('-').map(Number);
-  if (parts.length < 3 || isNaN(parts[0])) return 0;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  if (parts.length < 3 || isNaN(parts[0]) || isNaN(parts[1]) || isNaN(parts[2])) return 0;
   const targetDate = new Date(parts[0], parts[1] - 1, parts[2]);
   targetDate.setHours(0, 0, 0, 0);
-
+  const today = new Date(); today.setHours(0, 0, 0, 0);
   if (targetDate < today) return 0;
-
-  let count = 0;
-  const cur = new Date(today);
+  let count = 0; const cur = new Date(today);
   while (cur <= targetDate) {
-    const dayOfWeek = cur.getDay();
-    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
-      count++;
-    }
+    if (cur.getDay() !== 0 && cur.getDay() !== 6) count++;
     cur.setDate(cur.getDate() + 1);
   }
   return count;
 };
 
 const getCalendarDaysLeft = (targetDateStr) => {
-  if (!targetDateStr || typeof targetDateStr !== 'string') return 0;
+  if (!targetDateStr || typeof targetDateStr !== 'string' || !targetDateStr.includes('-')) return '-';
   const parts = targetDateStr.split('-').map(Number);
-  if (parts.length < 3 || isNaN(parts[0])) return 0;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  if (parts.length < 3 || isNaN(parts[0]) || isNaN(parts[1]) || isNaN(parts[2])) return '-';
   const targetDate = new Date(parts[0], parts[1] - 1, parts[2]);
   targetDate.setHours(0, 0, 0, 0);
-
-  const diffTime = targetDate - today;
-  return Math.max(0, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  return Math.max(0, Math.ceil((targetDate - today) / (1000 * 60 * 60 * 24)));
 };
 
-const PropFirmTracker = ({ activeAccount, accountMeta, onEditAccount, netPnl }) => {
-  const isAll = activeAccount === 'all';
-  const meta = accountMeta || {
-    type: 'eval',
-    targetProfit: 3000,
-    purchaseDate: '2026-09-01',
-    expirationDate: '2026-09-30',
-    initialBalance: 50000
+const AccountConfigModal = ({ isOpen, onClose, currentAccount, onSave, onRename, onDelete, onReset }) => {
+  const [name, setName] = useState('');
+  const [type, setType] = useState('eval');
+  const [targetProfit, setTargetProfit] = useState(3000);
+  const [purchaseDate, setPurchaseDate] = useState('2026-09-01');
+  const [expirationDate, setExpirationDate] = useState('2026-09-30');
+  const [initialBalance, setInitialBalance] = useState(50000);
+  const [accountCost, setAccountCost] = useState(0);
+  const [totalPayouts, setTotalPayouts] = useState(0);
+  const [confirmAction, setConfirmAction] = useState(null);
+
+  useEffect(() => {
+    if (currentAccount) {
+      setName(currentAccount.name || '');
+      setType(currentAccount.type || 'eval');
+      setTargetProfit(currentAccount.targetProfit || 3000);
+      setPurchaseDate(currentAccount.purchaseDate || new Date().toISOString().split('T')[0]);
+      setExpirationDate(currentAccount.expirationDate || new Date().toISOString().split('T')[0]);
+      setInitialBalance(currentAccount.initialBalance || 50000);
+      setAccountCost(currentAccount.accountCost || 0);
+      setTotalPayouts(currentAccount.totalPayouts || 0);
+    }
+  }, [currentAccount, isOpen]);
+
+  if (!isOpen || !currentAccount) return null;
+
+  const isAll = currentAccount.accountId === 'all';
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    const finalName = name.trim() || currentAccount.name || 'Mi Cuenta';
+    if (!isAll && finalName !== currentAccount.name) {
+      onRename(currentAccount.accountId, finalName);
+    }
+    onSave(currentAccount.accountId, { 
+      name: isAll ? 'Vista Consolidada' : finalName,
+      type, 
+      targetProfit: Number(targetProfit) || 0, 
+      purchaseDate, 
+      expirationDate, 
+      initialBalance: Number(initialBalance) || 0, 
+      accountCost: Number(accountCost) || 0, 
+      totalPayouts: Number(totalPayouts) || 0 
+    });
+    onClose();
   };
 
+  const executeConfirm = () => {
+    if (confirmAction === 'reset') onReset(currentAccount.accountId);
+    if (confirmAction === 'delete') onDelete(currentAccount.accountId);
+    setConfirmAction(null);
+    onClose();
+  };
+
+  if (confirmAction) {
+    return (
+      <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+        <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 text-center space-y-4 border border-slate-100">
+          <div className="mx-auto w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mb-2">
+            <AlertTriangle className="w-8 h-8 text-red-500" />
+          </div>
+          <h3 className="text-xl font-bold text-slate-800">¿Estás seguro?</h3>
+          <p className="text-sm text-slate-500 leading-relaxed">
+            {confirmAction === 'reset' 
+              ? `Esto archivará el ciclo actual de "${currentAccount.name}". Las operaciones se reiniciarán a cero para este ciclo.`
+              : `Esto eliminará permanentemente la cuenta "${currentAccount.name}" y todos sus trades.`}
+          </p>
+          <div className="flex gap-3 pt-4 mt-2 border-t border-slate-100">
+            <button type="button" onClick={() => setConfirmAction(null)} className="flex-1 py-2.5 rounded-xl font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200">Cancelar</button>
+            <button type="button" onClick={executeConfirm} className="flex-1 py-2.5 rounded-xl font-semibold bg-red-600 text-white hover:bg-red-700">Confirmar</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden p-6 space-y-4">
+        <div className="flex justify-between items-center border-b pb-3">
+          <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
+            <Edit3 className="w-5 h-5 text-emerald-600" /> Configuración de Cuenta
+          </h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-4 text-xs">
+          <div>
+            <label className="font-semibold block mb-1">Nombre de la Cuenta</label>
+            <input 
+              type="text" 
+              value={name} 
+              onChange={(e) => setName(e.target.value)} 
+              disabled={isAll}
+              className={`w-full p-2 border rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none ${isAll ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-white'}`} 
+              placeholder={isAll ? "Vista consolidada de todas las cuentas" : "Ej: Apex 50K #1"} 
+              required={!isAll} 
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <button type="button" onClick={() => setType('eval')} className={`py-2 px-3 rounded-lg font-bold border transition-all ${type === 'eval' ? 'bg-blue-50 border-blue-500 text-blue-700' : 'bg-white border-gray-200 text-slate-500'}`}>🎯 Evaluación</button>
+            <button type="button" onClick={() => setType('funded')} className={`py-2 px-3 rounded-lg font-bold border transition-all ${type === 'funded' ? 'bg-emerald-50 border-emerald-500 text-emerald-700' : 'bg-white border-gray-200 text-slate-500'}`}>🏆 Fondeada</button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="font-semibold block mb-1">Fecha de Compra</label>
+              <input type="date" value={purchaseDate} onChange={(e) => setPurchaseDate(e.target.value)} className="w-full p-2 border rounded-lg" required />
+            </div>
+            <div>
+              <label className="font-semibold block mb-1">Vencimiento / Renovación</label>
+              <input type="date" value={expirationDate} onChange={(e) => setExpirationDate(e.target.value)} className="w-full p-2 border rounded-lg" required />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="font-semibold block mb-1">Profit Target ($)</label>
+              <input type="number" value={targetProfit} onChange={(e) => setTargetProfit(e.target.value)} className="w-full p-2 border rounded-lg" required />
+            </div>
+            <div>
+              <label className="font-semibold block mb-1">Balance Inicial ($)</label>
+              <input type="number" value={initialBalance} onChange={(e) => setInitialBalance(e.target.value)} className="w-full p-2 border rounded-lg" />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 pt-3 border-t">
+            <div>
+              <label className="font-semibold block mb-1">Costos / Resets Pagados ($)</label>
+              <input type="number" value={accountCost} onChange={(e) => setAccountCost(e.target.value)} className="w-full p-2 border rounded-lg text-red-600 font-semibold" />
+            </div>
+            <div>
+              <label className="font-semibold block mb-1">Retiros / Payouts Cobrados ($)</label>
+              <input type="number" value={totalPayouts} onChange={(e) => setTotalPayouts(e.target.value)} className="w-full p-2 border rounded-lg text-emerald-600 font-semibold" />
+            </div>
+          </div>
+
+          {!isAll && (
+            <div className="pt-3 border-t border-slate-100 flex gap-2">
+              <button type="button" onClick={() => setConfirmAction('reset')} className="flex-1 py-2 bg-amber-50 text-amber-700 border border-amber-200 font-semibold rounded-lg hover:bg-amber-100">Reiniciar Ciclo</button>
+              <button type="button" onClick={() => setConfirmAction('delete')} className="flex-1 py-2 bg-red-50 text-red-700 border border-red-200 font-semibold rounded-lg hover:bg-red-100">Eliminar Cuenta</button>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-3 border-t">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-xs font-semibold text-slate-500">Cancelar</button>
+            <button type="submit" className="px-5 py-2 text-xs font-bold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700">Guardar Cambios</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+const PropFirmTracker = ({ currentAccount, netPnl, onEditAccount }) => {
+  const isAll = !currentAccount || currentAccount.accountId === 'all';
+  const meta = currentAccount || { type: 'eval', targetProfit: 3000, purchaseDate: '2026-09-01', expirationDate: '2026-09-30', initialBalance: 50000, accountCost: 0, totalPayouts: 0 };
   const isFunded = meta.type === 'funded';
   const target = Number(meta.targetProfit) || 3000;
   const currentPnl = Number(netPnl) || 0;
   const remainingPnl = Math.max(0, target - currentPnl);
-  
   const tradingDaysLeft = getRemainingTradingDays(meta.expirationDate);
   const calDaysLeft = getCalendarDaysLeft(meta.expirationDate);
-  
   const requiredDailyAvg = (!isFunded && tradingDaysLeft > 0) ? (remainingPnl / tradingDaysLeft) : 0;
-  const progressPercent = Math.min(100, Math.max(0, Math.round((currentPnl / target) * 100)));
+  const progressPercent = target > 0 ? Math.min(100, Math.max(0, Math.round((currentPnl / target) * 100))) : 0;
+  const cost = Number(meta.accountCost) || 0;
+  const payouts = Number(meta.totalPayouts) || 0;
+  const netBalance = payouts - cost;
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-5 mb-6 transition-all">
@@ -688,105 +273,75 @@ const PropFirmTracker = ({ activeAccount, accountMeta, onEditAccount, netPnl }) 
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-base font-bold text-slate-900">
-                {isAll ? "Meta de Fondeo (Vista Consolidada)" : `Cuenta: ${String(activeAccount)}`}
+                {isAll ? "Vista Consolidada (Todas las cuentas)" : `Cuenta: ${meta.name || "Mi Cuenta"}`}
               </h2>
-              <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${
-                isFunded 
-                  ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' 
-                  : 'bg-amber-100 text-amber-800 border border-amber-200'
-              }`}>
-                {isFunded ? "🏆 Cuenta Fondeada" : "🎯 En Prueba de Evaluación"}
+              <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold uppercase ${isFunded ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                {isFunded ? "🏆 Fondeada" : "🎯 Evaluación"}
               </span>
             </div>
-            <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-2">
-              <span>Compra: <strong>{String(meta?.purchaseDate || 'Sin asignar')}</strong></span>
-              <span>•</span>
-              <span>Vencimiento / Renovación: <strong>{String(meta?.expirationDate || 'Sin asignar')}</strong></span>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {isAll 
+                ? "Métricas acumuladas de todas las cuentas registradas" 
+                : `Compra: ${String(meta?.purchaseDate)} • Vence: ${String(meta?.expirationDate)}`}
             </p>
           </div>
         </div>
-
-        <div className="flex items-center gap-2 self-end lg:self-center">
-          <button
-            onClick={onEditAccount}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 transition-colors shadow-xs"
-          >
-            <Edit3 className="w-3.5 h-3.5 text-blue-600" />
-            Configurar Fechas y Metas
-          </button>
-        </div>
+        <button 
+          onClick={onEditAccount} 
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 transition-colors"
+        >
+          <Edit3 className="w-3.5 h-3.5 text-blue-600" /> Configurar Cuenta y Metas
+        </button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-100 flex items-center gap-3">
-          <div className="p-2 bg-white rounded-lg border border-slate-200 text-blue-600 shadow-2xs">
-            <CalendarClock className="w-5 h-5" />
-          </div>
+          <div className="p-2 bg-white rounded-lg border border-slate-200 text-blue-600 shadow-2xs"><CalendarClock className="w-5 h-5" /></div>
           <div>
             <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">Tiempo Restante</span>
             <div className="flex items-baseline gap-1 mt-0.5">
               <span className="text-lg font-black text-slate-800">{calDaysLeft}</span>
-              <span className="text-xs text-slate-500">días ({tradingDaysLeft} operativos)</span>
+              {calDaysLeft !== '-' && <span className="text-xs text-slate-500">días</span>}
             </div>
           </div>
         </div>
 
         <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-100 flex items-center gap-3">
-          <div className="p-2 bg-white rounded-lg border border-slate-200 text-emerald-600 shadow-2xs">
-            <Target className="w-5 h-5" />
-          </div>
+          <div className="p-2 bg-white rounded-lg border border-slate-200 text-emerald-600 shadow-2xs"><Target className="w-5 h-5" /></div>
           <div className="flex-1 min-w-0">
-            <div className="flex justify-between items-center">
-              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                {isFunded ? "Buffer de Retiro" : "Target de Paso"}
-              </span>
-              <span className="text-xs font-bold text-emerald-600">{progressPercent}%</span>
-            </div>
-            <div className="text-sm font-black text-slate-800 mt-0.5">
-              ${currentPnl.toFixed(0)} <span className="text-xs text-slate-400 font-normal">/ ${target.toLocaleString()}</span>
-            </div>
-            <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden mt-1.5">
-              <div className="bg-emerald-500 h-full rounded-full transition-all duration-700" style={{ width: `${progressPercent}%` }} />
-            </div>
+            <div className="flex justify-between items-center"><span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">{isFunded ? "Buffer de Retiro" : "Target de Paso"}</span><span className="text-xs font-bold text-emerald-600">{progressPercent}%</span></div>
+            <div className="text-sm font-black text-slate-800 mt-0.5">${currentPnl.toFixed(0)} <span className="text-xs text-slate-400 font-normal">/ ${target.toLocaleString()}</span></div>
+            <div className="w-full bg-slate-200 h-1.5 rounded-full mt-1.5 overflow-hidden"><div className="bg-emerald-500 h-full rounded-full transition-all duration-700" style={{ width: `${progressPercent}%` }} /></div>
           </div>
         </div>
 
         <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-100 flex items-center gap-3">
-          <div className="p-2 bg-white rounded-lg border border-slate-200 text-purple-600 shadow-2xs">
-            <DollarSign className="w-5 h-5" />
-          </div>
+          <div className="p-2 bg-white rounded-lg border border-slate-200 text-purple-600 shadow-2xs"><DollarSign className="w-5 h-5" /></div>
           <div>
-            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
-              {isFunded ? "Capital Generado" : "Falta para Pasar"}
-            </span>
-            <span className={`text-lg font-black ${remainingPnl === 0 ? 'text-emerald-600' : 'text-slate-800'}`}>
-              {remainingPnl === 0 ? "¡Objetivo Cumplido! 🎉" : `$${remainingPnl.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 1})}`}
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">{isFunded ? "Capital Generado" : "Falta para Pasar"}</span>
+            <span className={`text-lg font-black ${remainingPnl <= 0 ? 'text-emerald-600' : 'text-slate-800'}`}>
+              {remainingPnl <= 0 ? "¡Cumplido! 🎉" : `$${remainingPnl.toLocaleString()}`}
             </span>
           </div>
         </div>
 
         <div className="p-3.5 rounded-xl bg-emerald-50/60 border border-emerald-100 flex items-center gap-3">
-          <div className="p-2 bg-white rounded-lg border border-emerald-200 text-emerald-600 shadow-2xs">
-            <Sparkles className="w-5 h-5" />
+          <div className="p-2 bg-white rounded-lg border border-emerald-200 text-emerald-600 shadow-2xs"><Sparkles className="w-5 h-5" /></div>
+          <div>
+            <span className="text-[11px] font-bold text-emerald-800 uppercase tracking-wider block">{isFunded ? "Rendimiento Fondeada" : "Promedio Necesario"}</span>
+            {isFunded ? <span className="text-xs font-semibold text-emerald-700">En fase de retiros</span> : remainingPnl <= 0 ? <span className="text-xs font-bold text-emerald-600">¡Superada!</span> : <span className="text-lg font-black text-emerald-600">+${requiredDailyAvg.toFixed(1)} <span className="text-xs font-medium text-emerald-700">/día</span></span>}
+          </div>
+        </div>
+
+        <div className={`p-3.5 rounded-xl border flex items-center gap-3 ${netBalance >= 0 ? 'bg-emerald-50 border-emerald-100' : 'bg-red-50 border-red-100'}`}>
+          <div className={`p-2 bg-white rounded-lg border shadow-2xs ${netBalance >= 0 ? 'text-emerald-600 border-emerald-200' : 'text-red-500 border-red-200'}`}>
+            <Wallet className="w-5 h-5" />
           </div>
           <div>
-            <span className="text-[11px] font-bold text-emerald-800 uppercase tracking-wider block">
-              {isFunded ? "Rendimiento Fondeada" : "Promedio Necesario"}
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">Balance Económico</span>
+            <span className={`text-lg font-black leading-tight ${netBalance >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+              {netBalance >= 0 ? `+$${netBalance.toLocaleString()}` : `-$${Math.abs(netBalance).toLocaleString()}`}
             </span>
-            {isFunded ? (
-              <span className="text-xs font-semibold text-emerald-700">En fase de cobro y retiros</span>
-            ) : remainingPnl === 0 ? (
-              <span className="text-xs font-bold text-emerald-600">¡Prueba superada!</span>
-            ) : tradingDaysLeft === 0 ? (
-              <span className="text-xs font-bold text-coral-600">Vencida / Renueva</span>
-            ) : (
-              <div className="flex items-baseline gap-1 mt-0.5">
-                <span className="text-lg font-black text-emerald-600">
-                  +${requiredDailyAvg.toFixed(1)}
-                </span>
-                <span className="text-xs text-emerald-700 font-medium">/día op.</span>
-              </div>
-            )}
           </div>
         </div>
       </div>
@@ -794,1020 +349,429 @@ const PropFirmTracker = ({ activeAccount, accountMeta, onEditAccount, netPnl }) 
   );
 };
 
-const AccountConfigModal = ({ isOpen, onClose, accountName, initialMeta, onSave }) => {
-  const [type, setType] = useState(initialMeta?.type || 'eval');
-  const [targetProfit, setTargetProfit] = useState(initialMeta?.targetProfit || 3000);
-  const [purchaseDate, setPurchaseDate] = useState(initialMeta?.purchaseDate || '2026-09-01');
-  const [expirationDate, setExpirationDate] = useState(initialMeta?.expirationDate || '2026-09-30');
-  const [initialBalance, setInitialBalance] = useState(initialMeta?.initialBalance || 50000);
-
-  useEffect(() => {
-    if (initialMeta) {
-      setType(initialMeta.type || 'eval');
-      setTargetProfit(initialMeta.targetProfit || 3000);
-      setPurchaseDate(initialMeta.purchaseDate || '2026-09-01');
-      setExpirationDate(initialMeta.expirationDate || '2026-09-30');
-      setInitialBalance(initialMeta.initialBalance || 50000);
-    }
-  }, [initialMeta]);
-
-  if (!isOpen) return null;
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    onSave({
-      type,
-      targetProfit: Number(targetProfit) || 0,
-      purchaseDate,
-      expirationDate,
-      initialBalance: Number(initialBalance) || 0
-    });
-    onClose();
-  };
-
-  return (
-    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden p-6 space-y-4">
-        <div className="flex justify-between items-center border-b pb-3">
-          <div className="flex items-center gap-2">
-            <Award className="w-5 h-5 text-emerald-600" />
-            <h2 className="text-base font-bold text-slate-800">
-              Configurar Cuenta: <span className="text-emerald-600">{accountName === 'all' ? 'General' : accountName}</span>
-            </h2>
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4 text-xs">
-          <div>
-            <label className="font-semibold block mb-1 text-gray-700">Estado de la Cuenta</label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setType('eval')}
-                className={`py-2 px-3 rounded-lg font-bold border text-center transition-all ${
-                  type === 'eval'
-                    ? 'bg-blue-50 border-blue-500 text-blue-700 shadow-xs'
-                    : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
-                }`}
-              >
-                🎯 En Prueba (Challenge)
-              </button>
-              <button
-                type="button"
-                onClick={() => setType('funded')}
-                className={`py-2 px-3 rounded-lg font-bold border text-center transition-all ${
-                  type === 'funded'
-                    ? 'bg-emerald-50 border-emerald-500 text-emerald-700 shadow-xs'
-                    : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
-                }`}
-              >
-                🏆 Fondeada (Real / PA)
-              </button>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="font-semibold block mb-1 text-gray-700">Fecha de Compra</label>
-              <input
-                type="date"
-                value={purchaseDate}
-                onChange={(e) => setPurchaseDate(e.target.value)}
-                className="w-full p-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none"
-                required
-              />
-            </div>
-            <div>
-              <label className="font-semibold block mb-1 text-gray-700">Fecha de Vencimiento</label>
-              <input
-                type="date"
-                value={expirationDate}
-                onChange={(e) => setExpirationDate(e.target.value)}
-                className="w-full p-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none"
-                required
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="font-semibold block mb-1 text-gray-700">Profit Target ($)</label>
-              <input
-                type="number"
-                value={targetProfit}
-                onChange={(e) => setTargetProfit(e.target.value)}
-                className="w-full p-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none font-semibold text-emerald-600"
-                placeholder="Ej: 3000"
-                required
-              />
-            </div>
-            <div>
-              <label className="font-semibold block mb-1 text-gray-700">Balance Inicial ($)</label>
-              <input
-                type="number"
-                value={initialBalance}
-                onChange={(e) => setInitialBalance(e.target.value)}
-                className="w-full p-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none"
-                placeholder="Ej: 50000"
-              />
-            </div>
-          </div>
-
-          <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-[11px] text-slate-600">
-            💡 El sistema calculará automáticamente los <strong>días hábiles operativos</strong> que te quedan antes del vencimiento y la cuota diaria exacta de ganancias para pasar la evaluación.
-          </div>
-
-          <div className="flex justify-end gap-2 pt-2 border-t">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-xs font-medium text-gray-500 hover:text-gray-700"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              className="px-4 py-2 text-xs font-semibold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors shadow-xs"
-            >
-              Guardar Configuración
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-};
-
-const SettingsModal = ({ isOpen, onClose }) => {
-  const [apiKey, setApiKey] = useState(() => (typeof window !== 'undefined' ? window.localStorage?.getItem('gemini_api_key') || '' : ''));
-  const [customFirebase, setCustomFirebase] = useState(() => (typeof window !== 'undefined' ? window.localStorage?.getItem('custom_firebase_config') || '' : ''));
-  const [savedMessage, setSavedMessage] = useState(false);
-
-  if (!isOpen) return null;
-
-  const handleSave = () => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem('gemini_api_key', apiKey.trim());
-      if (customFirebase.trim()) {
-        window.localStorage.setItem('custom_firebase_config', customFirebase.trim());
-      } else {
-        window.localStorage.removeItem('custom_firebase_config');
-      }
-    }
-    setSavedMessage(true);
-    setTimeout(() => {
-      setSavedMessage(false);
-      onClose();
-      window.location.reload();
-    }, 1200);
-  };
-
-  return (
-    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden p-6 space-y-4">
-        <div className="flex justify-between items-center border-b pb-3">
-          <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
-            <Settings className="w-5 h-5 text-emerald-500" /> Configurar Producción y Llaves
-          </h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        <div className="space-y-3 text-xs text-gray-600">
-          <div>
-            <label className="font-semibold block mb-1 text-gray-700 flex items-center gap-1.5">
-              <KeyRound className="w-3.5 h-3.5 text-blue-500" /> Google Gemini API Key (Gratis)
-            </label>
-            <input
-              type="password"
-              placeholder="AIzaSy..."
-              className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-emerald-500 font-mono text-xs"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-            />
-            <p className="text-[10px] text-gray-400 mt-1">Obtén tu clave gratis en Google AI Studio (aistudio.google.com).</p>
-          </div>
-
-          <div>
-            <label className="font-semibold block mb-1 text-gray-700 flex items-center gap-1.5">
-              <Database className="w-3.5 h-3.5 text-amber-500" /> Firebase Config JSON (Opcional)
-            </label>
-            <textarea
-              rows={4}
-              placeholder='{"apiKey": "...", "authDomain": "...", "projectId": "..."}'
-              className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-emerald-500 font-mono text-[11px]"
-              value={customFirebase}
-              onChange={(e) => setCustomFirebase(e.target.value)}
-            />
-            <p className="text-[10px] text-gray-400 mt-1">Tu base de datos Firebase ya está configurada automáticamente.</p>
-          </div>
-        </div>
-
-        {savedMessage && (
-          <div className="p-2 bg-emerald-50 text-emerald-700 text-xs font-semibold rounded text-center">
-            ¡Configuración guardada! Reiniciando...
-          </div>
-        )}
-
-        <div className="flex justify-end gap-2 pt-2 border-t">
-          <button onClick={onClose} className="px-4 py-2 text-xs font-medium text-gray-500 hover:text-gray-700">
-            Cerrar
-          </button>
-          <button onClick={handleSave} className="px-4 py-2 text-xs font-medium bg-emerald-600 text-white rounded-lg hover:bg-emerald-700">
-            Guardar Cambios
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const KpiRow = () => {
-  const { chartData, rawData } = React.useContext(DashboardContext);
-
-  const stats = useMemo(() => {
-    if (!chartData || chartData.length === 0) {
-      return {
-        netPnl: 0,
-        winRate: 0,
-        profitFactor: 0,
-        dayWinRate: 0,
-        avgWin: 0,
-        avgLoss: 0,
-        operatingDays: 0,
-        avgDailyPnl: 0
-      };
-    }
-
-    const netPnl = chartData.reduce((acc, curr) => acc + (Number(curr.pnl) || 0), 0);
-    const operatingDays = chartData.filter(d => d.trades > 0 || d.pnl !== 0).length;
-    const avgDailyPnl = operatingDays > 0 ? netPnl / operatingDays : 0;
-
-    let totalTrades = 0;
-    let winningTrades = 0;
-    let grossWin = 0;
-    let grossLoss = 0;
-
-    if (rawData && rawData.length > 0) {
-      rawData.forEach(trade => {
-        const tCount = trade.totalTrades || 0;
-        const wRate = (trade.winRate || 0) / 100;
-        const wTrades = tCount * wRate;
-        totalTrades += tCount;
-        winningTrades += wTrades;
-
-        if (trade.netPnl > 0) {
-          grossWin += trade.netPnl;
-        } else {
-          grossLoss += Math.abs(trade.netPnl);
-        }
-      });
-    } else {
-      chartData.forEach(d => {
-        const tCount = d.trades || 0;
-        const wTrades = tCount * ((d.winRate || 0) / 100);
-        totalTrades += tCount;
-        winningTrades += wTrades;
-        if (d.pnl > 0) grossWin += d.pnl;
-        else grossLoss += Math.abs(d.pnl);
-      });
-    }
-
-    const winRate = totalTrades > 0 ? Math.round((winningTrades / totalTrades) * 100) : 0;
-    const profitFactor = grossLoss > 0 ? (grossWin / grossLoss).toFixed(2) : grossWin > 0 ? '99.9' : '0.00';
-    
-    const winningDays = chartData.filter(d => d.pnl > 0).length;
-    const dayWinRate = operatingDays > 0 ? Math.round((winningDays / operatingDays) * 100) : 0;
-
-    const avgWin = rawData && rawData.length > 0
-      ? (rawData.reduce((acc, curr) => acc + (curr.avgWin || 0), 0) / (rawData.filter(r => r.avgWin > 0).length || 1)).toFixed(2)
-      : '350.50';
-
-    const avgLoss = rawData && rawData.length > 0
-      ? (rawData.reduce((acc, curr) => acc + Math.abs(curr.avgLoss || 0), 0) / (rawData.filter(r => r.avgLoss !== 0).length || 1)).toFixed(2)
-      : '145.20';
-
-    return {
-      netPnl,
-      winRate,
-      profitFactor,
-      dayWinRate,
-      avgWin,
-      avgLoss,
-      operatingDays,
-      avgDailyPnl
-    };
-  }, [chartData, rawData]);
-
-  const sparklineData = chartData.map(d => ({ v: d.cumulative }));
-  const avgWinNum = Number(stats.avgWin) || 1;
-  const avgLossNum = Number(stats.avgLoss) || 1;
-  const totalAvg = avgWinNum + avgLossNum;
-  const winPercent = Math.round((avgWinNum / totalAvg) * 100);
-
-  return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
-      <Card>
-        <CardTitle title="Net P&L" subtitle="Resultado Acumulado" icon={Activity} />
-        <div className="flex flex-col justify-between h-24">
-          <div>
-            <div className={`text-2xl font-black ${stats.netPnl >= 0 ? 'text-emerald-600' : 'text-coral-500'}`}>
-              {stats.netPnl >= 0 ? `+$${stats.netPnl.toLocaleString()}` : `-$${Math.abs(stats.netPnl).toLocaleString()}`}
-            </div>
-            <div className="text-[11px] font-semibold text-slate-500 mt-0.5">
-              Promedio: <span className={stats.avgDailyPnl >= 0 ? 'text-emerald-600' : 'text-coral-500'}>
-                {stats.avgDailyPnl >= 0 ? `+$${stats.avgDailyPnl.toFixed(1)}` : `-$${Math.abs(stats.avgDailyPnl).toFixed(1)}`}
-              </span>/día
-            </div>
-          </div>
-          <div className="h-10 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={sparklineData.length > 0 ? sparklineData : [{ v: 0 }, { v: 100 }]}>
-                <Line 
-                  type="monotone" 
-                  dataKey="v" 
-                  stroke={stats.netPnl >= 0 ? themeColors.emerald : themeColors.coral} 
-                  strokeWidth={2} 
-                  dot={false} 
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      </Card>
-
-      <Card>
-        <CardTitle title="Trade Win %" subtitle="Tasa de Acierto" icon={Target} />
-        <SemiCircleGauge value={stats.winRate} max={100} label="Win Rate" suffix="%" color={themeColors.emerald} />
-      </Card>
-
-      <Card>
-        <CardTitle title="Profit Factor" subtitle="Ratio Ganancia/Pérdida" icon={TrendingUp} />
-        <SemiCircleGauge value={Number(stats.profitFactor)} max={5} label="Gross Win/Loss" color="#3B82F6" />
-      </Card>
-
-      <Card>
-        <CardTitle title="Day Win %" subtitle="Días Ganadores" icon={CalendarDays} />
-        <SemiCircleGauge value={stats.dayWinRate} max={100} label="Días Positivos" suffix="%" color={themeColors.emerald} />
-      </Card>
-
-      <Card>
-        <CardTitle title="Avg Win / Loss" subtitle="Promedio Ganador/Perdedor" icon={ArrowUpRight} />
-        <div className="flex flex-col justify-center h-24">
-          <div className="flex justify-between items-baseline mb-2">
-            <span className="text-sm font-bold text-emerald-600">+${stats.avgWin}</span>
-            <span className="text-sm font-bold text-coral-500">-${stats.avgLoss}</span>
-          </div>
-          <div className="w-full bg-coral-100 h-2 rounded-full overflow-hidden flex">
-            <div className="bg-emerald-500 h-full transition-all duration-700" style={{ width: `${winPercent}%` }} />
-            <div className="bg-coral-500 h-full transition-all duration-700" style={{ width: `${100 - winPercent}%` }} />
-          </div>
-          <div className="flex justify-between text-[10px] text-gray-400 mt-1 uppercase font-semibold">
-            <span>Avg Win</span>
-            <span>Avg Loss</span>
-          </div>
-        </div>
-      </Card>
-    </div>
-  );
-};
-
-const MainChartsRow = () => {
-  const { chartData } = React.useContext(DashboardContext);
-
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
-      <Card>
-        <CardTitle title="Trade Score" subtitle="Evaluación operativa y disciplina" icon={Award} />
-        <div className="h-64 w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <RadarChart cx="50%" cy="50%" outerRadius="75%" data={radarData}>
-              <PolarGrid stroke="#E2E8F0" />
-              <PolarAngleAxis dataKey="subject" tick={{ fill: '#64748B', fontSize: 11 }} />
-              <PolarRadiusAxis angle={30} domain={[0, 100]} tick={false} axisLine={false} />
-              <Radar name="Score" dataKey="score" stroke={themeColors.emerald} fill={themeColors.emerald} fillOpacity={0.4} />
-            </RadarChart>
-          </ResponsiveContainer>
-        </div>
-      </Card>
-
-      <Card>
-        <CardTitle title="Daily P&L" subtitle="Resultado neto diario" icon={BarChart2} />
-        <div className="h-64 w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
-              <XAxis dataKey="day" stroke="#94A3B8" fontSize={11} tickLine={false} />
-              <YAxis stroke="#94A3B8" fontSize={11} tickLine={false} tickFormatter={v => `$${v}`} />
-              <Tooltip 
-                formatter={(val) => [`$${val}`, 'P&L']}
-                labelFormatter={(label) => `Día ${label}`}
-                contentStyle={{ borderRadius: '8px', border: '1px solid #E2E8F0', fontSize: '12px' }}
-              />
-              <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>
-                {chartData.map((entry, index) => (
-                  <Cell 
-                    key={`cell-${index}`} 
-                    fill={entry.pnl >= 0 ? themeColors.emerald : themeColors.coral} 
-                  />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </Card>
-
-      <Card>
-        <CardTitle title="Cumulative P&L" subtitle="Curva de capital acumulado" icon={TrendingUp} />
-        <div className="h-64 w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={chartData}>
-              <defs>
-                <linearGradient id="pnlCurveGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor={themeColors.emerald} stopOpacity={0.35}/>
-                  <stop offset="95%" stopColor={themeColors.emerald} stopOpacity={0.0}/>
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
-              <XAxis dataKey="day" stroke="#94A3B8" fontSize={11} tickLine={false} />
-              <YAxis stroke="#94A3B8" fontSize={11} tickLine={false} tickFormatter={v => `$${v}`} />
-              <Tooltip 
-                formatter={(val) => [`$${val}`, 'Acumulado']}
-                labelFormatter={(label) => `Día ${label}`}
-                contentStyle={{ borderRadius: '8px', border: '1px solid #E2E8F0', fontSize: '12px' }}
-              />
-              <Area 
-                type="monotone" 
-                dataKey="cumulative" 
-                stroke={themeColors.emerald} 
-                strokeWidth={2.5} 
-                fillOpacity={1} 
-                fill="url(#pnlCurveGrad)" 
-              />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      </Card>
-    </div>
-  );
-};
-
-const BottomRow = () => {
-  const { rawData, onDeleteTrade } = React.useContext(DashboardContext);
-
-  const [currentDate, setCurrentDate] = useState(() => {
-    if (rawData && rawData.length > 0) {
-      const [y, m] = rawData[0].date.split('-').map(Number);
-      return new Date(y, m - 1, 1);
-    }
-    return new Date(2026, 8, 1);
-  });
-
-  useEffect(() => {
-    if (rawData && rawData.length > 0) {
-      const [y, m] = rawData[0].date.split('-').map(Number);
-      setCurrentDate(new Date(y, m - 1, 1));
-    }
-  }, [rawData]);
-
-  const year = currentDate.getFullYear();
-  const month = currentDate.getMonth();
-
-  const prevMonth = () => setCurrentDate(new Date(year, month - 1, 1));
-  const nextMonth = () => setCurrentDate(new Date(year, month + 1, 1));
-
-  const monthName = currentDate.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
-  const capitalizedMonth = monthName.charAt(0).toUpperCase() + monthName.slice(1);
-
-  const calendarData = useMemo(() => {
-    const firstDay = new Date(year, month, 1);
-    const lastDay = new Date(year, month + 1, 0);
-    const totalDays = lastDay.getDate();
-
-    let startDayIndex = firstDay.getDay() - 1;
-    if (startDayIndex === -1) startDayIndex = 6;
-
-    const tradeMap = new Map();
-    (rawData && rawData.length > 0 ? rawData : defaultDailyPnLData).forEach(trade => {
-      tradeMap.set(trade.date, trade);
-    });
-
-    const weeks = [];
-    let currentWeek = [];
-
-    for (let i = 0; i < startDayIndex; i++) {
-      currentWeek.push(null);
-    }
-
-    for (let day = 1; day <= totalDays; day++) {
-      const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      const dayData = tradeMap.get(dateStr) || null;
-
-      currentWeek.push({
-        day,
-        date: dateStr,
-        data: dayData
-      });
-
-      if (currentWeek.length === 7) {
-        const weekPnl = currentWeek.reduce((acc, cell) => acc + (cell?.data?.netPnl !== undefined ? cell.data.netPnl : cell?.data?.pnl || 0), 0);
-        const weekTrades = currentWeek.reduce((acc, cell) => acc + (cell?.data?.totalTrades !== undefined ? cell.data.totalTrades : cell?.data?.trades || 0), 0);
-        weeks.push({ days: currentWeek, totalPnl: weekPnl, totalTrades: weekTrades });
-        currentWeek = [];
-      }
-    }
-
-    if (currentWeek.length > 0) {
-      while (currentWeek.length < 7) {
-        currentWeek.push(null);
-      }
-      const weekPnl = currentWeek.reduce((acc, cell) => acc + (cell?.data?.netPnl !== undefined ? cell.data.netPnl : cell?.data?.pnl || 0), 0);
-      const weekTrades = currentWeek.reduce((acc, cell) => acc + (cell?.data?.totalTrades !== undefined ? cell.data.totalTrades : cell?.data?.trades || 0), 0);
-      weeks.push({ days: currentWeek, totalPnl: weekPnl, totalTrades: weekTrades });
-    }
-
-    return weeks;
-  }, [year, month, rawData]);
-
-  const overtradingScatterData = useMemo(() => {
-    const list = rawData && rawData.length > 0 ? rawData : defaultDailyPnLData;
-    return list.map(item => {
-      const pnl = item.netPnl !== undefined ? item.netPnl : item.pnl;
-      const trades = item.totalTrades !== undefined ? item.totalTrades : item.trades;
-      return {
-        trades: trades || 0,
-        pnl: pnl || 0,
-        isWin: pnl >= 0
-      };
-    });
-  }, [rawData]);
-
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-      <Card className="lg:col-span-2 overflow-x-auto">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
-          <div>
-            <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Trading Calendar</h3>
-            <p className="text-xs text-gray-400 mt-0.5">Desempeño mensual exacto</p>
-          </div>
-          
-          <div className="flex items-center gap-2">
-            <button onClick={prevMonth} className="p-1.5 hover:bg-gray-100 rounded-lg text-gray-500 transition-colors">
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <span className="text-xs font-bold text-gray-700 min-w-[120px] text-center">
-              {capitalizedMonth}
-            </span>
-            <button onClick={nextMonth} className="p-1.5 hover:bg-gray-100 rounded-lg text-gray-500 transition-colors">
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-
-        <div className="min-w-[550px]">
-          <div className="grid grid-cols-8 gap-1.5 mb-1.5 text-center">
-            {['LUN', 'MAR', 'MIÉ', 'JUE', 'VIE', 'SÁB', 'DOM'].map(d => (
-              <div key={d} className="text-[10px] font-bold text-gray-400 uppercase py-1">{d}</div>
-            ))}
-            <div className="text-[10px] font-bold text-emerald-700 uppercase py-1 bg-emerald-50 rounded">SEMANA</div>
-          </div>
-
-          <div className="space-y-1.5">
-            {calendarData.map((week, wIdx) => (
-              <div key={`w-${wIdx}`} className="grid grid-cols-8 gap-1.5">
-                {week.days.map((cell, dIdx) => {
-                  if (!cell) {
-                    return <div key={`empty-${wIdx}-${dIdx}`} className="h-16 bg-slate-50/50 rounded-lg border border-slate-100/60" />;
-                  }
-
-                  const pnl = cell.data ? (cell.data.netPnl !== undefined ? cell.data.netPnl : cell.data.pnl) : null;
-                  const trades = cell.data ? (cell.data.totalTrades !== undefined ? cell.data.totalTrades : cell.data.trades) : null;
-                  const winRate = cell.data?.winRate;
-                  const isPositive = pnl !== null && pnl >= 0;
-
-                  return (
-                    <div 
-                      key={`cell-${cell.date}`} 
-                      className={`h-16 p-1.5 rounded-lg border flex flex-col justify-between transition-all relative group ${
-                        cell.data 
-                          ? isPositive 
-                            ? 'bg-emerald-50/40 border-emerald-200' 
-                            : 'bg-coral-50/40 border-coral-200'
-                          : 'bg-white border-slate-100'
-                      }`}
-                    >
-                      <div className="flex justify-between items-start">
-                        <span className="text-[11px] font-bold text-slate-700">{cell.day}</span>
-                        {cell.data && cell.data.id && onDeleteTrade && (
-                          <button
-                            onClick={() => onDeleteTrade(cell.data.id)}
-                            title="Eliminar registro"
-                            className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-coral-500 transition-opacity p-0.5"
-                          >
-                            <Trash2 className="w-3 h-3" />
-                          </button>
-                        )}
-                        {cell.data && (
-                          <span className={`text-[11px] font-black ${isPositive ? 'text-emerald-600' : 'text-coral-500'}`}>
-                            {isPositive ? `+${pnl}` : pnl}
-                          </span>
-                        )}
-                      </div>
-
-                      {cell.data && (
-                        <div className="flex justify-between text-[9px] text-slate-500">
-                          <span>{trades} Trd</span>
-                          {winRate !== undefined && <span>{winRate}% W</span>}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-
-                <div className={`h-16 p-1.5 rounded-lg border flex flex-col justify-center items-center text-center ${
-                  week.totalPnl > 0 ? 'bg-emerald-50 border-emerald-200' : week.totalPnl < 0 ? 'bg-coral-50 border-coral-200' : 'bg-slate-50 border-slate-100'
-                }`}>
-                  <span className="text-[9px] font-bold text-slate-400 uppercase">P&L Neto</span>
-                  <span className={`text-xs font-black ${week.totalPnl >= 0 ? 'text-emerald-600' : 'text-coral-500'}`}>
-                    {week.totalPnl >= 0 ? `+$${week.totalPnl}` : `-$${Math.abs(week.totalPnl)}`}
-                  </span>
-                  <span className="text-[9px] text-slate-500 font-medium">{week.totalTrades} trd</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </Card>
-
-      <Card>
-        <CardTitle title="Overtrading Analysis" subtitle="Total Trades vs P&L" icon={TrendingUp} />
-        <div className="h-64 w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <ScatterChart margin={{ top: 10, right: 10, bottom: 20, left: -10 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-              <XAxis 
-                type="number" 
-                dataKey="trades" 
-                name="Trades" 
-                stroke="#94A3B8" 
-                fontSize={11} 
-                label={{ value: 'Total Trades', position: 'insideBottom', offset: -10, fontSize: 10, fill: '#94A3B8' }}
-              />
-              <YAxis 
-                type="number" 
-                dataKey="pnl" 
-                name="P&L" 
-                stroke="#94A3B8" 
-                fontSize={11} 
-                tickFormatter={v => `$${v}`} 
-              />
-              <Tooltip 
-                cursor={{ strokeDasharray: '3 3' }}
-                content={({ payload }) => {
-                  if (payload && payload.length) {
-                    const data = payload[0].payload;
-                    return (
-                      <div className="bg-white p-2 rounded-lg shadow-sm border border-slate-100 text-xs">
-                        <p className="font-bold text-slate-800">Trades: {data.trades}</p>
-                        <p className={`font-semibold ${data.pnl >= 0 ? 'text-emerald-600' : 'text-coral-500'}`}>
-                          P&L: ${data.pnl}
-                        </p>
-                      </div>
-                    );
-                  }
-                  return null;
-                }}
-              />
-              <Scatter data={overtradingScatterData}>
-                {overtradingScatterData.map((entry, index) => (
-                  <Cell 
-                    key={`scatter-${index}`} 
-                    fill={entry.isWin ? themeColors.emerald : themeColors.coral} 
-                  />
-                ))}
-              </Scatter>
-            </ScatterChart>
-          </ResponsiveContainer>
-        </div>
-        <p className="text-[10px] text-slate-400 mt-2 text-center">
-          Puntos verdes = Ganadores • Puntos rojos = Perdedores
-        </p>
-      </Card>
-    </div>
-  );
-};
-
-const App = () => {
+export default function App() {
   const [user, setUser] = useState(null);
-  const [realTrades, setRealTrades] = useState([]);
-  const [accountsMeta, setAccountsMeta] = useState({});
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isAccountConfigOpen, setIsAccountConfigOpen] = useState(false);
+  const [accounts, setAccounts] = useState([]);
+  const [trades, setTrades] = useState([]);
+  const [selectedAccountId, setSelectedAccountId] = useState('all');
   const [dateFilter, setDateFilter] = useState('all');
-  const [selectedAccount, setSelectedAccount] = useState('all');
-  const [authErrorMsg, setAuthErrorMsg] = useState(null);
+  const [isAccountConfigOpen, setIsAccountConfigOpen] = useState(false);
+  const [isTradeEntryOpen, setIsTradeEntryOpen] = useState(false);
 
   useEffect(() => {
-    const initAuth = async () => {
-      try {
-        setAuthErrorMsg(null);
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          try {
-            await signInWithCustomToken(auth, __initial_auth_token);
-            return;
-          } catch (tokenErr) {
-            console.warn("Token previo no coincide. Iniciando sesión anónima...", tokenErr);
-          }
-        }
-        await signInAnonymously(auth);
-      } catch (e) {
-        console.error("Auth error", e);
-        if (e.code === 'auth/admin-restricted-operation' || e.message?.includes('admin-restricted-operation')) {
-          setAuthErrorMsg("Habilita el proveedor 'Anónimo' en tu Firebase Console (Authentication > Sign-in method) para permitir guardar datos.");
-        } else {
-          setAuthErrorMsg(e.message || "Error al autenticar en Firebase.");
-        }
-      }
-    };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
-    return () => unsubscribe();
+    signInAnonymously(auth).catch(e => console.error(e));
+    return onAuthStateChanged(auth, setUser);
   }, []);
 
   useEffect(() => {
     if (!user) return;
-    const metaColRef = collection(db, 'artifacts', appId, 'users', user.uid, 'accounts_meta');
-    const unsubscribe = onSnapshot(metaColRef, (snapshot) => {
-      const metas = {};
-      snapshot.docs.forEach(docSnap => {
-        metas[docSnap.id] = docSnap.data();
-      });
-      setAccountsMeta(metas);
-    }, (error) => console.error("Error loading accounts meta:", error));
+    const uid = user.uid;
 
-    return () => unsubscribe();
+    const unsubAccounts = onSnapshot(collection(db, 'artifacts', appId, 'users', uid, 'accounts'), (snap) => {
+      let accs = snap.docs.map(d => ({ accountId: d.id, ...d.data() }));
+      if (accs.length === 0) {
+        const defaultAcc = {
+          accountId: 'acc_principal',
+          name: 'Cuenta Principal',
+          type: 'funded',
+          targetProfit: 3000,
+          purchaseDate: '2026-07-01',
+          expirationDate: '2026-11-24',
+          initialBalance: 50000,
+          accountCost: 150,
+          totalPayouts: 1500,
+          activeCycleId: 'cycle_1'
+        };
+        setDoc(doc(db, 'artifacts', appId, 'users', uid, 'accounts', defaultAcc.accountId), defaultAcc);
+        accs = [defaultAcc];
+      }
+      setAccounts(accs);
+    });
+
+    const unsubTrades = onSnapshot(collection(db, 'artifacts', appId, 'users', uid, 'trades'), (snap) => {
+      const records = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      records.sort((a, b) => (a.entryTime || a.date).localeCompare(b.entryTime || b.date));
+      setTrades(records);
+    });
+
+    return () => { unsubAccounts(); unsubTrades(); };
   }, [user]);
 
-  useEffect(() => {
-    if (!user) return;
-    const collectionRef = collection(db, 'artifacts', appId, 'users', user.uid, 'trading_days');
-    const unsubscribe = onSnapshot(collectionRef, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      data.sort((a, b) => a.date.localeCompare(b.date));
-      setRealTrades(data);
-    }, (error) => console.error("Firestore error:", error));
-    
-    return () => unsubscribe();
-  }, [user]);
-
-  const handleSaveAccountMeta = async (newMeta) => {
-    if (!user) return;
-    const accountKey = selectedAccount === 'all' ? 'Cuenta Principal' : selectedAccount;
-    try {
-      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'accounts_meta', accountKey);
-      await setDoc(docRef, { ...newMeta, updatedAt: new Date().toISOString() }, { merge: true });
-    } catch (err) {
-      console.error("Error saving account meta:", err);
+  const activeAccount = useMemo(() => {
+    if (selectedAccountId === 'all') {
+      const totalCosts = accounts.reduce((s, a) => s + (Number(a.accountCost) || 0), 0);
+      const totalPayouts = accounts.reduce((s, a) => s + (Number(a.totalPayouts) || 0), 0);
+      const targetProfit = accounts.reduce((s, a) => s + (Number(a.targetProfit) || 0), 0);
+      return {
+        accountId: 'all',
+        name: 'Vista Consolidada',
+        type: 'funded',
+        targetProfit,
+        accountCost: totalCosts,
+        totalPayouts: totalPayouts,
+        purchaseDate: 'N/A',
+        expirationDate: 'N/A'
+      };
     }
+    return accounts.find(a => a.accountId === selectedAccountId) || accounts[0] || null;
+  }, [accounts, selectedAccountId]);
+
+  const handleSaveAccount = async (accId, updatedData) => {
+    if (!user || accId === 'all') return;
+    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'accounts', accId), updatedData, { merge: true });
   };
 
-  const handleDeleteTrade = async (docId) => {
-    if (!user || !docId) return;
-    try {
-      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'trading_days', docId);
-      await deleteDoc(docRef);
-    } catch (err) {
-      console.error("Error deleting record:", err);
-    }
+  const handleRenameAccount = async (accId, newName) => {
+    if (!user || accId === 'all' || !newName.trim()) return;
+    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'accounts', accId), { name: newName.trim() }, { merge: true });
   };
 
-  const existingAccounts = useMemo(() => {
-    if (!realTrades || realTrades.length === 0) return ['Cuenta Principal'];
-    const accs = new Set(realTrades.map(t => t.account || 'Cuenta Principal'));
-    return Array.from(accs);
-  }, [realTrades]);
+  const handleDeleteAccount = async (accId) => {
+    if (!user || accId === 'all') return;
+    const batch = writeBatch(db);
+    batch.delete(doc(db, 'artifacts', appId, 'users', user.uid, 'accounts', accId));
+    const tradesQuery = query(collection(db, 'artifacts', appId, 'users', user.uid, 'trades'), where("accountId", "==", accId));
+    const snap = await getDocs(tradesQuery);
+    snap.forEach(d => batch.delete(d.ref));
+    await batch.commit();
+    setSelectedAccountId('all');
+  };
 
-  const accountFilteredTrades = useMemo(() => {
-    if (selectedAccount === 'all') return realTrades;
-    return realTrades.filter(t => (t.account || 'Cuenta Principal') === selectedAccount);
-  }, [realTrades, selectedAccount]);
-
-  const availableMonths = useMemo(() => {
-    if (!accountFilteredTrades || accountFilteredTrades.length === 0) return [];
-    const months = new Set(accountFilteredTrades.map(t => t.date.substring(0, 7)));
-    return Array.from(months).sort().reverse();
-  }, [accountFilteredTrades]);
-
-  const filteredTrades = useMemo(() => {
-    if (dateFilter === 'all') return accountFilteredTrades;
-    return accountFilteredTrades.filter(t => t.date.startsWith(dateFilter));
-  }, [accountFilteredTrades, dateFilter]);
-
-  const chartData = useMemo(() => {
-    if (filteredTrades.length === 0) {
-      if (realTrades.length === 0) return defaultDailyPnLData;
-      return [];
-    }
-
-    const groupedMap = new Map();
-    filteredTrades.forEach(item => {
-      if (!groupedMap.has(item.date)) {
-        groupedMap.set(item.date, {
-          id: item.id,
-          date: item.date,
-          pnl: item.netPnl,
-          trades: item.totalTrades,
-          winTrades: item.totalTrades * ((item.winRate || 0) / 100),
-          avgWin: item.avgWin || 0,
-          avgLoss: item.avgLoss || 0,
-          entriesCount: 1
-        });
-      } else {
-        const current = groupedMap.get(item.date);
-        current.pnl += item.netPnl;
-        current.trades += item.totalTrades;
-        current.winTrades += item.totalTrades * ((item.winRate || 0) / 100);
-        current.avgWin = (current.avgWin + (item.avgWin || 0)) / 2;
-        current.avgLoss = (current.avgLoss + (item.avgLoss || 0)) / 2;
-        current.entriesCount += 1;
+  const handleResetAccountCycle = async (accId) => {
+    if (!user) return;
+    const batch = writeBatch(db);
+    const snap = await getDocs(collection(db, 'artifacts', appId, 'users', user.uid, 'trades'));
+    snap.forEach(d => {
+      const data = d.data();
+      // Borra los trades de la cuenta o los huérfanos sin accountId
+      if (accId === 'all' || data.accountId === accId || !data.accountId) {
+        batch.delete(d.ref);
       }
     });
+    await batch.commit();
+  };
 
-    const sortedDates = Array.from(groupedMap.keys()).sort();
-    let cumulative = 0;
-
-    return sortedDates.map((dStr, i) => {
-      const dData = groupedMap.get(dStr);
-      cumulative += dData.pnl;
-      const calcWinRate = dData.trades > 0 ? Math.round((dData.winTrades / dData.trades) * 100) : 0;
-      return {
-        id: dData.id,
-        day: (i + 1).toString(),
-        date: dStr,
-        pnl: dData.pnl,
-        cumulative,
-        trades: dData.trades,
-        winRate: calcWinRate,
-        avgWin: dData.avgWin,
-        avgLoss: dData.avgLoss
-      };
+  // Garantiza que cada nuevo trade lleve SIEMPRE un accountId válido
+  const handleSaveTradesBatch = async (newTrades) => {
+    if (!user) return;
+    const batch = writeBatch(db);
+    const targetAccId = (selectedAccountId !== 'all' ? selectedAccountId : accounts[0]?.accountId) || 'acc_principal';
+    
+    newTrades.forEach(t => {
+      const ref = doc(collection(db, 'artifacts', appId, 'users', user.uid, 'trades'));
+      batch.set(ref, {
+        ...t,
+        accountId: (t.accountId && t.accountId !== 'all') ? t.accountId : targetAccId,
+        createdAt: serverTimestamp()
+      });
     });
-  }, [filteredTrades, realTrades]);
-
-  const formatMonthStr = (dateStr) => {
-    if (!dateStr || typeof dateStr !== 'string' || !dateStr.includes('-')) {
-      return String(dateStr || '');
-    }
-    const parts = dateStr.split('-');
-    if (parts.length < 2) return String(dateStr);
-    const y = parseInt(parts[0], 10);
-    const m = parseInt(parts[1], 10);
-    if (isNaN(y) || isNaN(m)) return String(dateStr);
-    const date = new Date(y, m - 1, 1);
-    const monthName = date.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
-    return monthName.charAt(0).toUpperCase() + monthName.slice(1);
+    await batch.commit();
   };
 
-  const activeAccountKey = selectedAccount === 'all' ? 'Cuenta Principal' : selectedAccount;
-  const currentAccountMeta = accountsMeta[activeAccountKey] || {
-    type: 'eval',
-    targetProfit: 3000,
-    purchaseDate: '2026-09-01',
-    expirationDate: '2026-09-30',
-    initialBalance: 50000
+  const handleCreateNewAccount = async () => {
+    if (!user) return;
+    const newId = `acc_${Date.now()}`;
+    const newAccount = {
+      accountId: newId,
+      name: `Cuenta #${accounts.length + 1}`,
+      type: 'eval',
+      targetProfit: 3000,
+      purchaseDate: new Date().toISOString().split('T')[0],
+      expirationDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+      initialBalance: 50000,
+      accountCost: 150,
+      totalPayouts: 0,
+      activeCycleId: `cycle_${Date.now()}`
+    };
+    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'accounts', newId), newAccount);
+    setSelectedAccountId(newId);
   };
 
-  const currentAccountNetPnl = chartData.reduce((sum, day) => sum + day.pnl, 0);
+  // Filtro resiliente: rescata trades huérfanos y los vincula a la cuenta activa
+  const accountTrades = useMemo(() => {
+    if (selectedAccountId === 'all') return trades;
+    
+    const currentAcc = accounts.find(a => a.accountId === selectedAccountId);
+    const accId = selectedAccountId;
+    const accName = currentAcc?.name;
+
+    return trades.filter(r => {
+      if (r.accountId && r.accountId === accId) return true;
+      if (r.account && (r.account === accName || r.account === accId)) return true;
+      // Rescate si el trade no tenía accountId y es la única cuenta o la primera
+      if ((!r.accountId || r.accountId === 'all' || r.accountId === 'undefined') && (accounts.length <= 1 || accId === accounts[0]?.accountId)) {
+        return true;
+      }
+      // Rescate si el trade tiene un ID huérfano que ya no existe en accounts
+      const matchesAnyAccount = accounts.some(a => a.accountId === r.accountId);
+      if (!matchesAnyAccount && (accounts.length <= 1 || accId === accounts[0]?.accountId)) {
+        return true;
+      }
+      return false;
+    });
+  }, [trades, selectedAccountId, accounts]);
+
+  const filteredTrades = useMemo(() => {
+    if (dateFilter === 'all') return accountTrades;
+    return accountTrades.filter(r => r.date.startsWith(dateFilter));
+  }, [accountTrades, dateFilter]);
+
+  const cycleStats = calculateTradingStats(accountTrades);
+  const analyticalStats = calculateTradingStats(filteredTrades);
+
+  const currentMeta = activeAccount || {};
+  const simulatedTransactions = useMemo(() => [
+    { type: 'account_cost', amount: currentMeta.accountCost || 0 },
+    { type: 'payout', amount: currentMeta.totalPayouts || 0 }
+  ], [currentMeta]);
+
+  const economicStats = calculateEconomicStats(analyticalStats.netPnl, simulatedTransactions);
+
+  const dailyAggregated = useMemo(() => aggregateTradesToDaily(filteredTrades), [filteredTrades]);
+  const hourlyData = useMemo(() => calculateHourlyPerformance(filteredTrades), [filteredTrades]);
+
+  const chartData = useMemo(() => {
+    let cum = 0;
+    return dailyAggregated.map((d, i) => { 
+      cum += d.netPnl; 
+      return { 
+        ...d, 
+        day: (i + 1).toString(), 
+        pnl: d.netPnl,
+        trades: d.totalTrades,
+        cumulative: cum 
+      }; 
+    });
+  }, [dailyAggregated]);
+
+  const dayWinPercent = dailyAggregated.length > 0 
+    ? (dailyAggregated.filter(d => d.netPnl > 0).length / dailyAggregated.length * 100) 
+    : 0;
+
+  const totalAvg = (analyticalStats.avgWin + analyticalStats.avgLoss) || 1;
+  const avgWinWidth = (analyticalStats.avgWin / totalAvg) * 100;
+  const avgLossWidth = 100 - avgWinWidth;
+
+  const availableMonths = useMemo(() => {
+    const months = new Set(trades.map(t => t.date.substring(0, 7)));
+    return Array.from(months).sort().reverse();
+  }, [trades]);
 
   return (
-    <DashboardContext.Provider value={{ 
-      chartData, 
-      rawData: filteredTrades, 
-      allTrades: realTrades, 
-      dateFilter,
-      selectedAccount,
-      onDeleteTrade: handleDeleteTrade
-    }}>
-      <div className="min-h-screen bg-[#F8FAFC] text-slate-800 p-4 md:p-8 font-sans">
-        <div className="max-w-[1600px] mx-auto">
-          
-          <header className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-4">
-            <div>
-              <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Trading Journal Dashboard</h1>
-              <p className="text-sm text-gray-500 mt-1 flex items-center gap-2">
-                {realTrades.length > 0 ? (
-                  <span className="flex items-center gap-1 text-emerald-600"><CheckCircle2 className="w-4 h-4"/> Sincronizado en tiempo real</span>
-                ) : (
-                  "Mostrando datos de demostración. ¡Sube tu primera captura!"
-                )}
-              </p>
-            </div>
-            
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
-                <Wallet className="w-4 h-4 text-blue-500" />
-                <select
-                  className="bg-transparent border-none text-xs font-semibold text-gray-700 focus:outline-none cursor-pointer"
-                  value={selectedAccount}
-                  onChange={(e) => setSelectedAccount(e.target.value)}
-                >
-                  <option value="all">Consolidado (Todas las cuentas)</option>
-                  {existingAccounts.map(acc => (
-                    <option key={acc} value={acc}>{acc}</option>
-                  ))}
-                </select>
-              </div>
+    <div className="min-h-screen bg-[#F8FAFC] text-slate-800 p-4 md:p-8 font-sans">
+      <div className="max-w-[1600px] mx-auto">
+        <header className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Trading Journal Dashboard</h1>
+            <p className="text-sm text-slate-500 mt-1 flex items-center gap-1.5">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600"/> Sincronizado en tiempo real
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <button 
+              onClick={() => setIsTradeEntryOpen(true)} 
+              className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-2 rounded-lg shadow-sm transition-colors"
+            >
+              <PlusCircle className="w-4 h-4" /> Registrar Trades
+            </button>
 
-              {realTrades.length > 0 && (
-                <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
-                  <Calendar className="w-4 h-4 text-gray-500" />
-                  <select
-                    className="bg-transparent border-none text-xs font-semibold text-gray-700 focus:outline-none cursor-pointer"
-                    value={dateFilter}
-                    onChange={(e) => setDateFilter(e.target.value)}
-                  >
-                    <option value="all">Histórico Completo</option>
-                    {availableMonths.map((m) => (
-                      <option key={m} value={m}>{formatMonthStr(m)}</option>
-                    ))}
-                  </select>
+            <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
+              <Wallet className="w-4 h-4 text-blue-500" />
+              <select 
+                className="bg-transparent border-none text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer" 
+                value={selectedAccountId} 
+                onChange={(e) => setSelectedAccountId(e.target.value)}
+              >
+                <option value="all">Todas las Cuentas (Consolidado)</option>
+                {accounts.map(a => <option key={a.accountId} value={a.accountId}>{a.name}</option>)}
+              </select>
+            </div>
+
+            <button 
+              onClick={handleCreateNewAccount} 
+              title="Crear Nueva Cuenta"
+              className="p-2 bg-white border border-gray-200 hover:bg-slate-50 rounded-lg text-slate-600 shadow-sm"
+            >
+              <PlusCircle className="w-4 h-4 text-slate-600" />
+            </button>
+
+            <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
+              <Calendar className="w-4 h-4 text-slate-500" />
+              <select 
+                className="bg-transparent border-none text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer" 
+                value={dateFilter} 
+                onChange={(e) => setDateFilter(e.target.value)}
+              >
+                <option value="all">Historial Completo</option>
+                {availableMonths.map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </div>
+          </div>
+        </header>
+
+        <main>
+          <PropFirmTracker 
+            currentAccount={activeAccount} 
+            netPnl={cycleStats.netPnl} 
+            onEditAccount={() => setIsAccountConfigOpen(true)} 
+          />
+
+          <EconomicPerformance stats={economicStats} />
+
+          {/* KPI ROW con R-Múltiplo Real */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4 mb-6">
+            <Card>
+              <CardTitle title="Net P&L" subtitle="Resultado Operativo" icon={Activity} />
+              <div className="flex flex-col justify-between h-24">
+                <div className={`text-2xl font-black mt-2 ${analyticalStats.netPnl >= 0 ? 'text-emerald-600' : 'text-coral-500'}`}>
+                  {analyticalStats.netPnl >= 0 
+                    ? `+$${analyticalStats.netPnl.toLocaleString(undefined, { minimumFractionDigits: 2 })}` 
+                    : `-$${Math.abs(analyticalStats.netPnl).toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
                 </div>
-              )}
-
-              <button 
-                onClick={() => setIsSettingsOpen(true)}
-                title="Configuración de Credenciales"
-                className="p-2.5 bg-white border border-gray-200 rounded-lg text-gray-600 hover:text-gray-900 hover:bg-gray-50 shadow-sm transition-colors"
-              >
-                <Settings className="w-4 h-4" />
-              </button>
-              
-              <button 
-                onClick={() => setIsModalOpen(true)}
-                className="px-4 py-2.5 bg-emerald-500 text-white rounded-lg text-sm font-medium hover:bg-emerald-600 shadow-sm transition-colors flex items-center gap-2"
-              >
-                <ClipboardPaste className="w-4 h-4" /> Registrar Trades
-              </button>
-            </div>
-          </header>
-
-          {authErrorMsg && (
-            <div className="mb-6 p-4 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl text-sm flex items-center justify-between">
-              <div>
-                <strong>Aviso de autenticación:</strong> {authErrorMsg}
+                <span className="text-xs text-slate-400 font-medium">{analyticalStats.totalTrades} operaciones</span>
               </div>
-              <button 
-                onClick={() => setAuthErrorMsg(null)}
-                className="ml-4 text-amber-600 hover:text-amber-800 font-bold text-xs uppercase"
-              >
-                Cerrar
-              </button>
+            </Card>
+
+            <Card>
+              <CardTitle title="Trade Win %" icon={Target} />
+              <SemiCircleGauge value={analyticalStats.winRate.toFixed(1)} max={100} label="Win Rate" suffix="%" color={themeColors.emerald} />
+            </Card>
+
+            <Card>
+              <CardTitle title="Profit Factor" icon={TrendingUp} />
+              <SemiCircleGauge value={analyticalStats.profitFactor === Infinity ? 5 : (analyticalStats.profitFactor || 0).toFixed(2)} max={5} label="Gross Win/Loss" color="#3B82F6" />
+            </Card>
+
+            <Card>
+              <CardTitle title="Day Win %" icon={CalendarDays} />
+              <SemiCircleGauge value={dayWinPercent.toFixed(1)} max={100} label="Días Positivos" suffix="%" color={themeColors.emerald} />
+            </Card>
+
+            <Card>
+              <CardTitle title="R-Múltiplo Prom." subtitle="Riesgo / Retorno" icon={Award} />
+              <div className="flex flex-col justify-between h-24">
+                <div className={`text-2xl font-black mt-2 ${analyticalStats.avgR && analyticalStats.avgR >= 1 ? 'text-emerald-600' : 'text-slate-800'}`}>
+                  {analyticalStats.avgR !== null ? `${analyticalStats.avgR}R` : 'N/A'}
+                </div>
+                <span className="text-xs text-slate-400 font-medium">
+                  Mejor: {analyticalStats.maxR !== null ? `+${analyticalStats.maxR}R` : '-'}
+                </span>
+              </div>
+            </Card>
+
+            <Card>
+              <CardTitle title="Avg Win / Loss" icon={ArrowUpRight} />
+              <div className="flex justify-between items-baseline mt-4 mb-3">
+                <span className="text-sm font-bold text-emerald-600">+${analyticalStats.avgWin.toFixed(2)}</span>
+                <span className="text-sm font-bold text-coral-500">-${analyticalStats.avgLoss.toFixed(2)}</span>
+              </div>
+              <div className="w-full bg-coral-100 h-2 rounded-full overflow-hidden flex">
+                <div className="bg-emerald-500 h-full transition-all" style={{ width: `${isNaN(avgWinWidth) ? 50 : avgWinWidth}%` }} />
+                <div className="bg-coral-500 h-full transition-all" style={{ width: `${isNaN(avgLossWidth) ? 50 : avgLossWidth}%` }} />
+              </div>
+            </Card>
+          </div>
+
+          {/* Gráficos Principales */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+            <Card>
+              <CardTitle title="P&L por Franja Horaria" subtitle="Rendimiento por hora de entrada" icon={Clock} />
+              <HourlyPerformanceChart data={hourlyData} />
+            </Card>
+
+            <Card>
+              <CardTitle title="Daily P&L" subtitle="Resultado neto diario" icon={BarChart2} />
+              <div className="h-64">
+                {chartData.length === 0 ? (
+                  <div className="h-full flex items-center justify-center text-xs text-slate-400">Sin datos para graficar</div>
+                ) : (
+                  <ResponsiveContainer>
+                    <BarChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
+                      <XAxis dataKey="date" fontSize={10} stroke="#94A3B8" tickLine={false} />
+                      <YAxis fontSize={11} stroke="#94A3B8" tickLine={false} tickFormatter={v => `$${v}`} />
+                      <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                      <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>
+                        {chartData.map((e, i) => <Cell key={i} fill={e.pnl >= 0 ? themeColors.emerald : themeColors.coral} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </Card>
+
+            <Card>
+              <CardTitle title="Cumulative P&L" subtitle="Curva de capital acumulado" icon={TrendingUp} />
+              <div className="h-64">
+                {chartData.length === 0 ? (
+                  <div className="h-full flex items-center justify-center text-xs text-slate-400">Sin datos para graficar</div>
+                ) : (
+                  <ResponsiveContainer>
+                    <AreaChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
+                      <XAxis dataKey="date" fontSize={10} stroke="#94A3B8" tickLine={false} />
+                      <YAxis fontSize={11} stroke="#94A3B8" tickLine={false} tickFormatter={v => `$${v}`} />
+                      <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                      <Area type="monotone" dataKey="cumulative" stroke={themeColors.emerald} strokeWidth={2.5} fill={themeColors.emerald} fillOpacity={0.15} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </Card>
+          </div>
+
+          {/* Calendario Dinámico y Overtrading (Limpio y sin duplicados) */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="lg:col-span-2">
+              <TradingCalendar dailyData={dailyAggregated} />
             </div>
-          )}
 
-          <main>
-            <PropFirmTracker 
-              activeAccount={selectedAccount}
-              accountMeta={currentAccountMeta}
-              netPnl={currentAccountNetPnl}
-              onEditAccount={() => setIsAccountConfigOpen(true)}
-            />
-
-            <KpiRow />
-            <MainChartsRow />
-            <BottomRow />
-          </main>
-          
-        </div>
+            <Card>
+              <CardTitle title="Overtrading Analysis" subtitle="Total Trades vs P&L" icon={TrendingUp} />
+              <div className="h-64">
+                {dailyAggregated.length === 0 ? (
+                  <div className="h-full flex items-center justify-center text-xs text-slate-400">Sin datos de sobreoperativa</div>
+                ) : (
+                  <ResponsiveContainer>
+                    <ScatterChart margin={{ top: 10, right: 10, bottom: 20, left: -10 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
+                      <XAxis type="number" dataKey="totalTrades" name="Trades" stroke="#94A3B8" fontSize={11} />
+                      <YAxis type="number" dataKey="netPnl" name="P&L" stroke="#94A3B8" fontSize={11} tickFormatter={v => `$${v}`} />
+                      <Tooltip cursor={{ strokeDasharray: '3 3' }} />
+                      <Scatter data={dailyAggregated}>
+                        {dailyAggregated.map((e, i) => (
+                          <Cell 
+                            key={i} 
+                            fill={e.dayStatus === 'WIN' ? themeColors.emerald : e.dayStatus === 'LOSS' ? themeColors.coral : '#F59E0B'} 
+                          />
+                        ))}
+                      </Scatter>
+                    </ScatterChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </Card>
+          </div>
+        </main>
       </div>
 
-      <UploadModal 
-        isOpen={isModalOpen} 
-        onClose={() => setIsModalOpen(false)} 
-        onSave={() => setIsModalOpen(false)}
-        userId={user?.uid}
-        existingAccounts={existingAccounts}
+      <AccountConfigModal 
+        isOpen={isAccountConfigOpen} 
+        onClose={() => setIsAccountConfigOpen(false)} 
+        currentAccount={selectedAccountId === 'all' ? (accounts[0] || activeAccount) : activeAccount} 
+        onSave={handleSaveAccount} 
+        onRename={handleRenameAccount} 
+        onDelete={handleDeleteAccount} 
+        onReset={handleResetAccountCycle} 
       />
 
-      <SettingsModal
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
+      <TradeEntryModal 
+        isOpen={isTradeEntryOpen} 
+        onClose={() => setIsTradeEntryOpen(false)} 
+        onSaveTrades={handleSaveTradesBatch} 
+        accounts={accounts} 
+        activeAccountId={selectedAccountId} 
       />
-
-      <AccountConfigModal
-        isOpen={isAccountConfigOpen}
-        onClose={() => setIsAccountConfigOpen(false)}
-        accountName={selectedAccount}
-        initialMeta={currentAccountMeta}
-        onSave={handleSaveAccountMeta}
-      />
-    </DashboardContext.Provider>
+    </div>
   );
-};
-
-export default App;
+}
