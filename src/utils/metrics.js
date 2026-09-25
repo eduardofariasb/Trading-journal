@@ -1,169 +1,201 @@
 // src/utils/metrics.js
 
 /**
- * Normaliza los registros de la base de datos para garantizar compatibilidad
- * con la nueva estructura de IDs estables (accountId, cycleId) y métricas derivadas.
+ * Calcula el múltiplo R de un trade individual basado en puntos
  */
-export function normalizeTradingRecord(docData, accountsMap = {}, defaultCycleMap = {}) {
-  const id = docData.id;
-  
-  // Resolución de cuenta: si no hay accountId, buscar por nombre o asignar fallback
-  let accountId = docData.accountId;
-  if (!accountId && docData.account) {
-    const matchedAccount = Object.values(accountsMap).find(a => a.name === docData.account);
-    accountId = matchedAccount ? matchedAccount.accountId : `acc_legacy_${docData.account.replace(/\s+/g, '_').toLowerCase()}`;
-  }
-  
-  const totalTrades = Number(docData.totalTrades || docData.trades || 0);
-  const winRate = Number(docData.winRate || 0);
-  
-  // Derivación matemática de wins/losses si no estaban explícitos en registros antiguos
-  let winningTrades = Number(docData.winningTrades);
-  let losingTrades = Number(docData.losingTrades);
-  if (isNaN(winningTrades) || isNaN(losingTrades)) {
-    winningTrades = Math.round((totalTrades * winRate) / 100);
-    losingTrades = Math.max(0, totalTrades - winningTrades);
-  }
+export function calculateTradeR(trade) {
+  const { entryPrice, exitPrice, stopLoss, direction } = trade;
+  if (!entryPrice || !exitPrice || !stopLoss) return null;
 
-  return {
-    id,
-    tradingDayId: id,
-    accountId: accountId || 'acc_default',
-    cycleId: docData.cycleId || defaultCycleMap[accountId] || `cycle_legacy_${accountId}`,
-    date: docData.date || new Date().toISOString().split('T')[0],
-    netPnl: Number(docData.netPnl !== undefined ? docData.netPnl : (docData.pnl || 0)),
-    totalTrades,
-    winningTrades,
-    losingTrades,
-    winRate: totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0,
-    avgWin: Math.max(0, Number(docData.avgWin || 0)),
-    avgLoss: Math.abs(Number(docData.avgLoss || 0)),
-    tradeScore: docData.tradeScore || null,
-    notes: docData.notes || '',
-    createdAt: docData.createdAt || null
-  };
+  const riskPoints = Math.abs(entryPrice - stopLoss);
+  if (riskPoints <= 0) return null;
+
+  const isLong = direction.toUpperCase() === 'LONG';
+  const gainedPoints = isLong ? (exitPrice - entryPrice) : (entryPrice - exitPrice);
+
+  return Number((gainedPoints / riskPoints).toFixed(2));
 }
 
 /**
- * Agrupa múltiples registros/sesiones del mismo día para la misma cuenta y ciclo.
- * Suma P&L y calcula promedios ponderados reales.
+ * Agrega trades individuales en días operativos para el Calendario y Gráficos diarios
  */
-export function aggregateDailyTradingData(records) {
+export function aggregateTradesToDaily(trades = []) {
   const map = new Map();
 
-  for (const item of records) {
-    const key = `${item.accountId}_${item.date}`;
+  for (const t of trades) {
+    const key = `${t.accountId}_${t.date}`;
     if (!map.has(key)) {
       map.set(key, {
-        date: item.date,
-        accountId: item.accountId,
-        cycleId: item.cycleId,
+        date: t.date,
+        accountId: t.accountId,
+        cycleId: t.cycleId,
         netPnl: 0,
         totalTrades: 0,
         winningTrades: 0,
         losingTrades: 0,
-        weightedWinSum: 0,
-        weightedLossSum: 0,
-        sessions: 0
+        grossWin: 0,
+        grossLoss: 0,
+        trades: []
       });
     }
 
-    const current = map.get(key);
-    current.netPnl += item.netPnl;
-    current.totalTrades += item.totalTrades;
-    current.winningTrades += item.winningTrades;
-    current.losingTrades += item.losingTrades;
-    current.weightedWinSum += (item.winningTrades * item.avgWin);
-    current.weightedLossSum += (item.losingTrades * item.avgLoss);
-    current.sessions += 1;
+    const day = map.get(key);
+    day.netPnl += t.netPnl;
+    day.totalTrades += 1;
+    day.trades.push(t);
+
+    if (t.netPnl > 0) {
+      day.winningTrades += 1;
+      day.grossWin += t.netPnl;
+    } else if (t.netPnl < 0) {
+      day.losingTrades += 1;
+      day.grossLoss += Math.abs(t.netPnl);
+    }
   }
 
-  return Array.from(map.values()).map(day => ({
-    ...day,
-    winRate: day.totalTrades > 0 ? (day.winningTrades / day.totalTrades) * 100 : 0,
-    avgWin: day.winningTrades > 0 ? day.weightedWinSum / day.winningTrades : 0,
-    avgLoss: day.losingTrades > 0 ? day.weightedLossSum / day.losingTrades : 0,
-  })).sort((a, b) => new Date(a.date) - new Date(b.date));
+  return Array.from(map.values()).map(d => ({
+    ...d,
+    winRate: d.totalTrades > 0 ? (d.winningTrades / d.totalTrades) * 100 : 0,
+    avgWin: d.winningTrades > 0 ? d.grossWin / d.winningTrades : 0,
+    avgLoss: d.losingTrades > 0 ? d.grossLoss / d.losingTrades : 0
+  })).sort((a, b) => a.date.localeCompare(b.date));
 }
 
 /**
- * Calcula las estadísticas globales de trading de un conjunto de registros.
- * Calcula el Profit Factor y los promedios ganadores/perdedores ponderados.
+ * Métricas generales calculadas a partir de trades atómicos reales
  */
-export function calculateTradingStats(records) {
-  if (!records || records.length === 0) {
-    return { 
-      hasData: false, 
-      netPnl: 0, 
-      totalTrades: 0, 
-      winningTrades: 0, 
-      losingTrades: 0, 
-      winRate: 0, 
-      profitFactor: null, 
-      avgWin: 0, 
-      avgLoss: 0, 
-      tradingDaysCount: 0, 
-      maxDrawdown: 0 
+export function calculateTradingStats(trades = []) {
+  if (!trades || trades.length === 0) {
+    return {
+      hasData: false,
+      netPnl: 0,
+      totalTrades: 0,
+      winningTrades: 0,
+      losingTrades: 0,
+      winRate: 0,
+      grossWin: 0,
+      grossLoss: 0,
+      profitFactor: null,
+      avgWin: 0,
+      avgLoss: 0,
+      avgR: null,
+      maxR: null,
+      tradingDaysCount: 0,
+      maxDrawdown: 0
     };
   }
 
-  const dailyAggregated = aggregateDailyTradingData(records);
-  let netPnl = 0, totalTrades = 0, winningTrades = 0, losingTrades = 0;
-  let totalGrossWin = 0, totalGrossLoss = 0;
+  let netPnl = 0;
+  let winningTrades = 0;
+  let losingTrades = 0;
+  let grossWin = 0;
+  let grossLoss = 0;
+  let sumR = 0;
+  let countR = 0;
+  let maxR = -Infinity;
 
-  for (const r of records) {
-    netPnl += r.netPnl;
-    totalTrades += r.totalTrades;
-    winningTrades += r.winningTrades;
-    losingTrades += r.losingTrades;
-    totalGrossWin += (r.winningTrades * r.avgWin);
-    totalGrossLoss += (r.losingTrades * r.avgLoss);
+  for (const t of trades) {
+    netPnl += t.netPnl;
+    if (t.netPnl > 0) {
+      winningTrades += 1;
+      grossWin += t.netPnl;
+    } else if (t.netPnl < 0) {
+      losingTrades += 1;
+      grossLoss += Math.abs(t.netPnl);
+    }
+
+    if (t.rMultiple !== null && !isNaN(t.rMultiple)) {
+      sumR += t.rMultiple;
+      countR += 1;
+      if (t.rMultiple > maxR) maxR = t.rMultiple;
+    }
   }
 
+  const totalTrades = trades.length;
+  const winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0;
+  
   let profitFactor = null;
-  if (totalGrossLoss > 0) profitFactor = totalGrossWin / totalGrossLoss;
-  else if (totalGrossWin > 0) profitFactor = Infinity;
+  if (grossLoss > 0) profitFactor = grossWin / grossLoss;
+  else if (grossWin > 0) profitFactor = Infinity;
 
-  // Cálculo de Max Drawdown basado en la curva de equity diaria
-  let peak = 0, runningPnl = 0, maxDrawdown = 0;
-  for (const d of dailyAggregated) {
-    runningPnl += d.netPnl;
+  // Max Drawdown trade a trade
+  let peak = 0;
+  let runningPnl = 0;
+  let maxDrawdown = 0;
+  const sorted = [...trades].sort((a, b) => a.entryTime.localeCompare(b.entryTime));
+  for (const t of sorted) {
+    runningPnl += t.netPnl;
     if (runningPnl > peak) peak = runningPnl;
     const dd = peak - runningPnl;
     if (dd > maxDrawdown) maxDrawdown = dd;
   }
 
+  const dailyAgg = aggregateTradesToDaily(trades);
+
   return {
-    hasData: totalTrades > 0 || dailyAggregated.length > 0,
+    hasData: totalTrades > 0,
     netPnl,
     totalTrades,
     winningTrades,
     losingTrades,
-    winRate: totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0,
+    winRate,
+    grossWin,
+    grossLoss,
     profitFactor,
-    avgWin: winningTrades > 0 ? totalGrossWin / winningTrades : 0,
-    avgLoss: losingTrades > 0 ? totalGrossLoss / losingTrades : 0,
-    tradingDaysCount: dailyAggregated.length,
+    avgWin: winningTrades > 0 ? grossWin / winningTrades : 0,
+    avgLoss: losingTrades > 0 ? grossLoss / losingTrades : 0,
+    avgR: countR > 0 ? Number((sumR / countR).toFixed(2)) : null,
+    maxR: countR > 0 && maxR !== -Infinity ? maxR : null,
+    tradingDaysCount: dailyAgg.length,
     maxDrawdown
   };
 }
 
 /**
- * Calcula el estado económico aislando el P&L de trading del flujo de caja.
+ * Métrica 1: Desempeño por franja horaria (Hora de entrada)
+ */
+export function calculateHourlyPerformance(trades = []) {
+  const hourMap = {};
+
+  for (const t of trades) {
+    let hour = '09:00';
+    if (t.entryTime) {
+      // Extrae la hora ya sea "2026-09-24 09:35" o "09:35"
+      const match = t.entryTime.match(/(\d{1,2}):\d{2}/);
+      if (match) {
+        hour = `${match[1].padStart(2, '0')}:00`;
+      }
+    }
+
+    if (!hourMap[hour]) {
+      hourMap[hour] = { hour, netPnl: 0, trades: 0, wins: 0 };
+    }
+
+    hourMap[hour].netPnl += t.netPnl;
+    hourMap[hour].trades += 1;
+    if (t.netPnl > 0) hourMap[hour].wins += 1;
+  }
+
+  return Object.values(hourMap)
+    .sort((a, b) => a.hour.localeCompare(b.hour))
+    .map(h => ({
+      ...h,
+      winRate: h.trades > 0 ? Math.round((h.wins / h.trades) * 100) : 0
+    }));
+}
+
+/**
+ * Finanzas y flujo de caja (inmune a variaciones operativas)
  */
 export function calculateEconomicStats(tradingPnl, transactions = []) {
   const COST_TYPES = new Set(['account_cost', 'reset_fee', 'activation_fee', 'platform_fee', 'other_expense']);
-  let totalCosts = 0, totalPayouts = 0, otherIncome = 0;
+  let totalCosts = 0;
+  let totalPayouts = 0;
 
   for (const tx of transactions) {
     const amt = Math.abs(Number(tx.amount) || 0);
-    if (COST_TYPES.has(tx.type)) {
-      totalCosts += amt;
-    } else if (tx.type === 'payout') {
-      totalPayouts += amt;
-    } else if (tx.type === 'other_income') {
-      otherIncome += amt;
-    }
+    if (COST_TYPES.has(tx.type)) totalCosts += amt;
+    else if (tx.type === 'payout') totalPayouts += amt;
   }
 
   return {
@@ -171,7 +203,7 @@ export function calculateEconomicStats(tradingPnl, transactions = []) {
     totalCosts,
     totalPayouts,
     capitalRetenido: tradingPnl - totalPayouts,
-    balanceEconomicoCaja: totalPayouts - totalCosts + otherIncome,
-    valorEconomicoGenerado: tradingPnl - totalCosts + otherIncome
+    balanceEconomicoCaja: totalPayouts - totalCosts,
+    valorEconomicoGenerado: tradingPnl - totalCosts
   };
 }
